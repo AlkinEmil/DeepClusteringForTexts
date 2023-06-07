@@ -1,1 +1,1 @@
-# deep_clustering_for_texts
+# Deep Clustering For Texts
