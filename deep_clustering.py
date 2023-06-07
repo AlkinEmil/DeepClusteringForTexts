@@ -123,7 +123,7 @@ class DeepClustering(nn.Module):
             clustering_loss = self.compute_clustering_loss(z)
         x_recon = self.dec(z)
         recon_loss = F.mse_loss(x_recon, x)
-        geom_loss = 0
+        geom_loss = torch.tensor(0)
         if self.mode == "train_embeds":
             total_loss = recon_loss * self.loss_weights[0] + geom_loss * self.loss_weights[1]
         else:
