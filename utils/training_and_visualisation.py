@@ -13,7 +13,7 @@ def plot_losses(losses, title):
     plt.show()
     
     
-def train(model, data, optimizer, epochs, device="cpu"):
+def train(model, dataloader, optimizer, epochs, device="cpu"):
     losses = dict()
     
     def update_losses(losses, loss):
@@ -26,11 +26,15 @@ def train(model, data, optimizer, epochs, device="cpu"):
     pbar = trange(epochs)
     for epoch in pbar:
         model.train()
-        optimizer.zero_grad()
-        loss = model.compute_loss(data.to(device))
-        update_losses(losses, loss)
-        total_loss = loss["total_loss"]
-        pbar.set_description(f"Total Loss: {total_loss.item():.2f}")
-        total_loss.backward()
-        optimizer.step()
+        for batch in dataloader:
+            batch = batch.to(device)
+            #x, neigh = batch
+            x, neigh = batch, None
+            optimizer.zero_grad()
+            loss = model.compute_loss(x, neigh)
+            update_losses(losses, loss)
+            total_loss = loss["total_loss"]
+            pbar.set_description(f"Total Loss: {total_loss.item():.2f}")
+            total_loss.backward()
+            optimizer.step()
     return losses
