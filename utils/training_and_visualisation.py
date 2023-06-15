@@ -27,9 +27,9 @@ def train(model, dataloader, optimizer, epochs, device="cpu"):
     for epoch in pbar:
         model.train()
         for batch in dataloader:
-            batch = batch.to(device)
+            #batch = batch.to(device)
             #x, neigh = batch
-            x, neigh = batch, None
+            x, neigh = batch[0].to(device), batch[1].to(device)
             optimizer.zero_grad()
             loss = model.compute_loss(x, neigh)
             update_losses(losses, loss)
