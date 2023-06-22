@@ -13,7 +13,12 @@ from scipy.sparse import lil_matrix
 
 
 class DeepClustering(nn.Module):
-    def __init__(self, n_classes, inp_dim, feat_dim, alpha, train_dataset, hid_dim=100, loss_weights=None, cluster_centers_init=None):
+    def __init__(self, n_classes, inp_dim, feat_dim, alpha, train_dataset, 
+                 hid_dim=100,
+                 loss_weights=None,
+                 cluster_centers_init=None,
+                 encoder=None,
+                 decoder=None):
         '''
             n_classes: positive int - number of clusters
             inp_dim: positive int - dimension of the original space
@@ -50,40 +55,54 @@ class DeepClustering(nn.Module):
             assert len(loss_weights) == 2
             assert isinstance(loss_weights[0], float)
             assert isinstance(loss_weights[1], float)
-            assert np.isclose(loss_weights[0] + loss_weights[1], 1)
+            #assert np.isclose(loss_weights[0] + loss_weights[1], 1)
             self.loss_weights = loss_weights
         
         if cluster_centers_init is None:
-            self.centers = torch.nn.Parameter(torch.zeros(n_classes, hid_dim))
+            self.centers = torch.nn.Parameter(torch.zeros(n_classes, feat_dim))
             torch.nn.init.xavier_uniform_(self.centers)
         else:
             assert isinstance(cluster_centers_init, torch.Tensor), "cluster_centers_init must be torch.Tensor"
-            assert cluster_centers_init.shape == (n_classes, hid_dim)
+            assert cluster_centers_init.shape == (n_classes, feat_dim)
             self.centers = nn.Parameter(cluster_centers_init)
         
-        self.enc = nn.Sequential(
-            nn.Linear(inp_dim, hid_dim),
-            #nn.BatchNorm1d(hid_dim),
-            nn.ReLU(),
-            #nn.Dropout(p=0.3),
-            nn.Linear(hid_dim, hid_dim),
-            #nn.BatchNorm1d(hid_dim),
-            nn.ReLU(),
-            #nn.Dropout(p=0.3),
-            nn.Linear(hid_dim, feat_dim)
-        )
+        if encoder is None:
+            self.enc = nn.Sequential(
+                nn.Linear(inp_dim, hid_dim),
+                #nn.BatchNorm1d(hid_dim),
+                nn.ReLU(),
+                #nn.Dropout(p=0.3),
+                nn.Linear(hid_dim, hid_dim),
+                #nn.BatchNorm1d(hid_dim),
+                nn.ReLU(),
+                #nn.Dropout(p=0.3),
+                #nn.Linear(hid_dim, hid_dim),
+                #nn.BatchNorm1d(hid_dim),
+                #nn.ReLU(),
+                #nn.Dropout(p=0.3),
+                nn.Linear(hid_dim, feat_dim)
+            )
+        else:
+            self.enc = encoder
         
-        self.dec = nn.Sequential(
-            nn.Linear(feat_dim, hid_dim),
-            #nn.BatchNorm1d(hid_dim),
-            nn.ReLU(),
-            #nn.Dropout(p=0.3),
-            nn.Linear(hid_dim, hid_dim),
-            #nn.BatchNorm1d(inp_dim),
-            nn.ReLU(),
-            #nn.Dropout(p=0.3),
-            nn.Linear(hid_dim, inp_dim)
-        )
+        if decoder is None:
+            self.dec = nn.Sequential(
+                nn.Linear(feat_dim, hid_dim),
+                #nn.BatchNorm1d(hid_dim),
+                nn.ReLU(),
+                #nn.Dropout(p=0.3),
+                nn.Linear(hid_dim, hid_dim),
+                #nn.BatchNorm1d(hid_dim),
+                nn.ReLU(),
+                #nn.Dropout(p=0.3),
+                #nn.Linear(hid_dim, hid_dim),
+                #nn.BatchNorm1d(hid_dim),
+                #nn.ReLU(),
+                #nn.Dropout(p=0.3),
+                nn.Linear(hid_dim, inp_dim)
+            )
+        else:
+            self.dec = decoder
         
     #def train_dataloader(self, neighbor_mat):
     #    train_dataloader = FastTensorDataLoader(
@@ -102,7 +121,7 @@ class DeepClustering(nn.Module):
         assert isinstance(loss_weights[1], float)
         assert isinstance(loss_weights[2], float)
         loss_weights = np.array(loss_weights)
-        assert np.isclose(loss_weights.sum(), 1)
+        #assert np.isclose(loss_weights.sum(), 1)
         
         self.mode = "train_clusters"
         
@@ -130,7 +149,7 @@ class DeepClustering(nn.Module):
     def compute_clustering_loss(self, z):
         q = self.compute_q(z)
         f = q.sum(0, keepdim=True)
-        p_unnorm = torch.pow(q, 2) / f
+        p_unnorm = torch.pow(q, 3) / f
         p = p_unnorm / p_unnorm.sum(1, keepdim=True)
         kl_loss = nn.KLDivLoss(reduction='sum')#"batchmean")
         return kl_loss(torch.log(p), q)
@@ -176,6 +195,20 @@ class DeepClustering(nn.Module):
         embd = np.vstack([self.enc(batch.to(device)).detach().cpu().numpy() for batch in dl_unshuf])
 
         return embd
+    
+    def transform_and_cluster(self, inputs, batch_size=None):
+        device = inputs.device
+        inputs = inputs.reshape(inputs.shape[0], -1)
+        dataset_plain = NumpyToTensorDataset(inputs)
+        dl_unshuf = torch.utils.data.DataLoader(
+            dataset_plain,
+            shuffle=False,
+            batch_size=batch_size,
+        )
+        embds = np.vstack([self.enc(batch.to(device)).detach().cpu().numpy() for batch in dl_unshuf])
+        centers = self.centers.cpu().detach().numpy()
+        clusters = np.vstack([np.argmin(np.sum(np.power(embd - centers, 2), axis=1)) for embd in embds])
+        return embds, clusters
     
     def create_dataloader(self, base_embeds, n_neighbours=40, annoy_trees=50, shuffle=True, batch_size=128, on_gpu=True):
         annoy = AnnoyIndex(self.inp_dim, "euclidean")

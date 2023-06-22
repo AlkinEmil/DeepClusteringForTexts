@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm.notebook import trange
+from IPython import display
 
 
 def plot_losses(losses, title):
@@ -12,9 +13,27 @@ def plot_losses(losses, title):
     plt.legend()
     plt.show()
     
+def plot_clusters_with_centers(model, base_embeds, clusters=None, title="Parametric UMAP for Banking77"):
+    device = model.centers.device
+    centers = model.centers.cpu().detach().numpy()
+    if clusters is None:
+        embeds, clusters = model.transform_and_cluster(base_embeds.to(device), batch_size=128)
+    else:
+        embeds = model.transform(base_embeds.to(device), batch_size=128)
+    plt.figure(figsize=(9, 9))
+    plt.scatter(*embeds.T, c=clusters, s=1.0)
+    plt.scatter(centers[:, 0], centers[:, 1], marker='x', label='Cluster centers', s=200)
+    plt.gca().set_aspect("equal")
+    plt.axis("off")
+    plt.title(title)
+    plt.legend()
+    plt.show()
     
-def train(model, dataloader, optimizer, epochs, device="cpu"):
+def train(model, data, optimizer, epochs, device="cpu", early_stoping=False, verbose=False):
     losses = dict()
+    model.eval()
+    dataloader = model.create_dataloader(data)
+    _, init_clusters = model.transform_and_cluster(data.to(device))
     
     def update_losses(losses, loss):
         for i in loss:
@@ -37,4 +56,10 @@ def train(model, dataloader, optimizer, epochs, device="cpu"):
             pbar.set_description(f"Total Loss: {total_loss.item():.2f}")
             total_loss.backward()
             optimizer.step()
+            if verbose:
+                plot_clusters_with_centers(model, data, clusters=init_clusters)
+                display.clear_output(wait=True)
+                #display.display(plt.gcf())
+            if early_stoping and model.mode == "train_clusters" and np.mean(losses['clustering_loss'][-10:]) < np.mean(losses['geom_loss'][-10:]):
+                return losses
     return losses
