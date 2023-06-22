@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm.notebook import trange
 from IPython import display
+import os
 
 
 def plot_losses(losses, title):
@@ -13,7 +14,7 @@ def plot_losses(losses, title):
     plt.legend()
     plt.show()
     
-def plot_clusters_with_centers(model, base_embeds, clusters=None, title="Parametric UMAP for Banking77"):
+def plot_clusters_with_centers(model, base_embeds, clusters=None, title="Deep Embedding Clustering for Banking77"):
     device = model.centers.device
     centers = model.centers.cpu().detach().numpy()
     if clusters is None:
@@ -27,9 +28,14 @@ def plot_clusters_with_centers(model, base_embeds, clusters=None, title="Paramet
     plt.axis("off")
     plt.title(title)
     plt.legend()
-    plt.show()
     
-def train(model, data, optimizer, epochs, device="cpu", early_stoping=False, verbose=False):
+    
+def train(model, data, optimizer, epochs, device="cpu", 
+          early_stoping=False, 
+          verbose=False, 
+          save_images=False, 
+          title="Deep Embedding Clustering for Banking77", 
+          save_dir='../imgs'):
     losses = dict()
     model.eval()
     dataloader = model.create_dataloader(data)
@@ -43,11 +49,10 @@ def train(model, data, optimizer, epochs, device="cpu", early_stoping=False, ver
                 losses[i].append(loss[i].item())
     
     pbar = trange(epochs)
+    t = 0
     for epoch in pbar:
         model.train()
         for batch in dataloader:
-            #batch = batch.to(device)
-            #x, neigh = batch
             x, neigh = batch[0].to(device), batch[1].to(device)
             optimizer.zero_grad()
             loss = model.compute_loss(x, neigh)
@@ -57,9 +62,14 @@ def train(model, data, optimizer, epochs, device="cpu", early_stoping=False, ver
             total_loss.backward()
             optimizer.step()
             if verbose:
-                plot_clusters_with_centers(model, data, clusters=init_clusters)
-                display.clear_output(wait=True)
-                #display.display(plt.gcf())
+                plot_clusters_with_centers(model, data, clusters=init_clusters, title=title)
+                if save_images:
+                    plt.savefig(os.path.join(save_dir, f"viz-{t:05d}.jpg"))
+                else:
+                    plt.show()
+                    display.clear_output(wait=True)
+                
             if early_stoping and model.mode == "train_clusters" and np.mean(losses['clustering_loss'][-10:]) < np.mean(losses['geom_loss'][-10:]):
                 return losses
+            t += 1
     return losses

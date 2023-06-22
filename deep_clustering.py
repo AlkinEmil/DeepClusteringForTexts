@@ -7,14 +7,13 @@ import torch.nn.functional as F
 from sklearn.cluster import KMeans
 
 from utils.parametric_umap import NumpyToTensorDataset, FastTensorDataLoader, ContrastiveLoss
+from utils.topic_extraction import get_topics_for_english
 
 from annoy import AnnoyIndex
 from scipy.sparse import lil_matrix
 
-
 class DeepClustering(nn.Module):
-    def __init__(self, n_classes, inp_dim, feat_dim, alpha, train_dataset, 
-                 hid_dim=100,
+    def __init__(self, n_classes, inp_dim, feat_dim, alpha, train_dataset,
                  loss_weights=None,
                  cluster_centers_init=None,
                  encoder=None,
@@ -28,22 +27,42 @@ class DeepClustering(nn.Module):
             cluster_centers_init: torch.Tensor of shape (n_classes, hid_dim)
         '''
         super().__init__()
-        assert isinstance(n_classes, int), "n_classes must be integer"
-        assert isinstance(inp_dim, int), "inp_dim must be integer"
-        assert isinstance(feat_dim, int), "feat_dim must be integer"
-        assert isinstance(hid_dim, int), "hid_dim must be integer"
         
-        assert n_classes > 0, "n_classes must be positive"
-        assert inp_dim > 0, "inp_dim must be positive"
-        assert feat_dim > 0, "feat_dim must be positive"
-        assert hid_dim > 0, "hid_dim must be positive"
+        SIMPLE_ENCODER = nn.Sequential(
+            nn.Linear(inp_dim, 100),
+            nn.ReLU(),
+            nn.Linear(100, 100),
+            nn.ReLU(),
+            nn.Linear(100, feat_dim)
+        )
+
+        SIMPLE_DECODER = nn.Sequential(
+            nn.Linear(feat_dim, 100),
+            nn.ReLU(),
+            nn.Linear(100, 100),
+            nn.ReLU(),
+            nn.Linear(100, inp_dim)
+        )
+        
+        if not isinstance(n_classes, int):
+            raise TypeError("'n_classes' must be integer")
+        if not isinstance(inp_dim, int):
+            raise TypeError("'inp_dim' must be integer")
+        if not isinstance(feat_dim, int):
+            raise TypeError("'feat_dim' must be integer")
+        
+        if n_classes <= 0:
+            raise ValueError("'n_classes' must be positive")
+        if inp_dim <= 0:
+            raise ValueError("'inp_dim' must be positive")
+        if feat_dim <= 0:
+            raise ValueError("'feat_dim' must be positive")
         
         self.embd_layer = nn.Embedding.from_pretrained(train_dataset, freeze=True)
         self.umap_loss = ContrastiveLoss(loss_mode="umap")
         
         self.K = n_classes
         self.inp_dim = inp_dim
-        self.hid_dim = hid_dim
         self.feat_dim = feat_dim
         self.alpha = alpha
         self.mode = "train_embeds"
@@ -62,57 +81,36 @@ class DeepClustering(nn.Module):
             self.centers = torch.nn.Parameter(torch.zeros(n_classes, feat_dim))
             torch.nn.init.xavier_uniform_(self.centers)
         else:
-            assert isinstance(cluster_centers_init, torch.Tensor), "cluster_centers_init must be torch.Tensor"
-            assert cluster_centers_init.shape == (n_classes, feat_dim)
+            if not isinstance(cluster_centers_init, torch.Tensor):
+                raise TypeError("cluster centers must of type `torch.Tensor`")
+            if cluster_centers_init.shape != (n_classes, feat_dim):
+                raise ValueError("cluster_centers_init must have shape ({}, {}), but not ({})"
+                                 .format(n_classes, feat_dim, tuple(cluster_centers_init.shape)))
             self.centers = nn.Parameter(cluster_centers_init)
         
         if encoder is None:
-            self.enc = nn.Sequential(
-                nn.Linear(inp_dim, hid_dim),
-                #nn.BatchNorm1d(hid_dim),
-                nn.ReLU(),
-                #nn.Dropout(p=0.3),
-                nn.Linear(hid_dim, hid_dim),
-                #nn.BatchNorm1d(hid_dim),
-                nn.ReLU(),
-                #nn.Dropout(p=0.3),
-                #nn.Linear(hid_dim, hid_dim),
-                #nn.BatchNorm1d(hid_dim),
-                #nn.ReLU(),
-                #nn.Dropout(p=0.3),
-                nn.Linear(hid_dim, feat_dim)
-            )
+            self.enc = SIMPLE_ENCODER
         else:
+            if not isinstance(encoder, nn.Module):
+                raise TypeError("encoder must of type `torch.nn.Module`")
+            try:
+                if encoder.forward(torch.zeros(42, inp_dim)).shape != (42, feat_dim):
+                    raise ValueError("encoder must be a map: R^{inp_dim} \\to R^{feat_dim}")
+            except Exception:
+                raise ValueError("encoder must be a map: R^{inp_dim} \\to R^{feat_dim}")
             self.enc = encoder
         
         if decoder is None:
-            self.dec = nn.Sequential(
-                nn.Linear(feat_dim, hid_dim),
-                #nn.BatchNorm1d(hid_dim),
-                nn.ReLU(),
-                #nn.Dropout(p=0.3),
-                nn.Linear(hid_dim, hid_dim),
-                #nn.BatchNorm1d(hid_dim),
-                nn.ReLU(),
-                #nn.Dropout(p=0.3),
-                #nn.Linear(hid_dim, hid_dim),
-                #nn.BatchNorm1d(hid_dim),
-                #nn.ReLU(),
-                #nn.Dropout(p=0.3),
-                nn.Linear(hid_dim, inp_dim)
-            )
+            self.dec = SIMPLE_DECODER
         else:
+            if not isinstance(decoder, nn.Module):
+                raise TypeError("decoder must of type `torch.nn.Module`")
+            try:
+                if decoder.forward(torch.zeros(42, feat_dim)).shape != (42, inp_dim):
+                    raise ValueError("decoder must be a map: R^{feat_dim} \\to R^{inp_dim}")
+            except Exception:
+                raise ValueError("decoder must be a map: R^{feat_dim} \\to R^{inp_dim}")
             self.dec = decoder
-        
-    #def train_dataloader(self, neighbor_mat):
-    #    train_dataloader = FastTensorDataLoader(
-    #        self.neighbor_mat,
-    #        shuffle=True,
-    #        batch_size=self.bs,
-    #        seed=0
-    #     )
-    #    return train_dataloader
-        
         
     def train_clusters(self, x, loss_weights):
         assert isinstance(loss_weights, list), "loss_weights must be list"
@@ -186,7 +184,10 @@ class DeepClustering(nn.Module):
     def transform(self, inputs, batch_size=None):
         device = inputs.device
         inputs = inputs.reshape(inputs.shape[0], -1)
-        dataset_plain = NumpyToTensorDataset(inputs)
+        #if isinstance(inputs, np.ndarray):
+        dataset_plain = NumpyToTensorDataset(inputs.detach().cpu().numpy())
+        #else:
+        #    dataset_plain = torch.utils.data.TensorDataset(inputs)
         dl_unshuf = torch.utils.data.DataLoader(
             dataset_plain,
             shuffle=False,
@@ -199,7 +200,10 @@ class DeepClustering(nn.Module):
     def transform_and_cluster(self, inputs, batch_size=None):
         device = inputs.device
         inputs = inputs.reshape(inputs.shape[0], -1)
-        dataset_plain = NumpyToTensorDataset(inputs)
+        #if isinstance(inputs, np.ndarray):
+        dataset_plain = NumpyToTensorDataset(inputs.detach().cpu().numpy())
+        #else:
+        #    dataset_plain = torch.utils.data.TensorDataset(inputs)
         dl_unshuf = torch.utils.data.DataLoader(
             dataset_plain,
             shuffle=False,
@@ -207,7 +211,7 @@ class DeepClustering(nn.Module):
         )
         embds = np.vstack([self.enc(batch.to(device)).detach().cpu().numpy() for batch in dl_unshuf])
         centers = self.centers.cpu().detach().numpy()
-        clusters = np.vstack([np.argmin(np.sum(np.power(embd - centers, 2), axis=1)) for embd in embds])
+        clusters = np.vstack([np.argmin(np.sum(np.power(embd - centers, 2), axis=1)) for embd in embds])[:, 0]
         return embds, clusters
     
     def create_dataloader(self, base_embeds, n_neighbours=40, annoy_trees=50, shuffle=True, batch_size=128, on_gpu=True):
@@ -233,3 +237,13 @@ class DeepClustering(nn.Module):
            on_gpu=on_gpu,
         )
         return train_dataloader
+    
+    def get_topics(self, texts, inputs, lang="english"):
+        if self.mode == "train_embeds":
+            raise PermissionError("model must be in `train_clusters` mode")
+        _, pred_clusters = self.transform_and_cluster(inputs.to(self.centers.device))
+        if lang == "english":
+            topics = get_topics_for_english(texts, pred_clusters, self.K)
+        else:
+            raise ValueError("Unknown language `{}`".format(lang))
+        return topics
