@@ -4,10 +4,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import pandas as pd
+
 from sklearn.cluster import KMeans
 
 from utils.parametric_umap import NumpyToTensorDataset, FastTensorDataLoader, ContrastiveLoss
-from utils.topic_extraction import get_topics_for_english
+from utils import topic_extraction
 
 from annoy import AnnoyIndex
 from scipy.sparse import lil_matrix
@@ -242,8 +244,9 @@ class DeepClustering(nn.Module):
         if self.mode == "train_embeds":
             raise PermissionError("model must be in `train_clusters` mode")
         _, pred_clusters = self.transform_and_cluster(inputs.to(self.centers.device))
-        if lang == "english":
-            topics = get_topics_for_english(texts, pred_clusters, self.K)
+        if lang in ["english", "russian"]:
+            data_frame = pd.DataFrame({"text": texts, "pred_cluster": pred_clusters})
+            topics = topic_extraction.get_topics(data_frame, language=lang)
         else:
             raise ValueError("Unknown language `{}`".format(lang))
         return topics

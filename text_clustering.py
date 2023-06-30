@@ -71,16 +71,16 @@ class TextClustering(nn.Module):
     def fit(self, base_embeds, device='cuda'):
         if self.kind == "deep clustering":
             self.model.to(device)
-            N_ITERS = 10
-            LR = 3e-2
+            N_ITERS = 20
+            LR = 1e-2
             optimizer = torch.optim.Adam(self.model.parameters(), lr=LR)
             print("Phase 1: train embeddings")
             losses1 = train(self.model, base_embeds, optimizer, N_ITERS, device)
         
             self.model.train_clusters(base_embeds.to(device), [0.33, 0.33, 0.34])
         
-            N_ITERS = 5
-            LR = 1e-3
+            N_ITERS = 8
+            LR = 1e-4
             # Change mode of the model to `train_clusters` and change weights of losses:
             optimizer = torch.optim.Adam(self.model.parameters(), lr=LR)
             print("Phase 2: train clusters")
