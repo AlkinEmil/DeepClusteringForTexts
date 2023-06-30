@@ -2,7 +2,7 @@ import numpy as np
 
 #import pandas as pd
 
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, SpectralClustering
 from umap.umap_ import UMAP
 
 
@@ -34,21 +34,28 @@ class ClassicClustering():
         self.n_clusters = n_clusters
         self.inp_dim = inp_dim
         self.feat_dim = feat_dim
+        self.clustering_type = clustering_type
         
         if dim_reduction_type is None:
             self.dim_reduction = UMAP(random_state=random_state, n_components=feat_dim)
             
-        if clustering_type is None:
+        if clustering_type is None or clustering_type == "kmeans":
             self.clustering = KMeans(n_clusters=n_clusters, random_state=random_state, n_init="auto")
+        elif clustering_type == "spectral":
+            self.clustering = SpectralClustering(n_clusters=n_clusters , random_state=random_state, n_jobs=-1)
 
     
     def fit(self, inputs):
         self.dim_reduction.fit(inputs)
         embd = self.dim_reduction.transform(inputs)
-        self.clustering.fit(embd)
+        if self.clustering_type != "spectral":
+            self.clustering.fit(embd)
         return self
     
     def transform_and_cluster(self, inputs):
         embds = self.dim_reduction.transform(inputs)
-        clusters = self.clustering.predict(embds)
+        if self.clustering_type != "spectral":
+            clusters = self.clustering.predict(embds)
+        else:
+            clusters = self.clustering.fit_predict(embds)
         return embds, clusters

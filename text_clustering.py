@@ -17,6 +17,8 @@ class TextClustering(nn.Module):
                  encoder=None,
                  decoder=None,
                  kind="deep clustering",
+                 dim_reduction_type=None, 
+                 clustering_type=None,
                  random_state=None):
         '''
             n_clusters: positive int - number of clusters
@@ -73,8 +75,8 @@ class TextClustering(nn.Module):
             self.model = ClassicClustering(n_clusters, 
                                            inp_dim, 
                                            feat_dim,
-                                           dim_reduction_type=None, 
-                                           clustering_type=None, 
+                                           dim_reduction_type=dim_reduction_type, 
+                                           clustering_type=clustering_type, 
                                            random_state=random_state)
         
     def fit(self, base_embeds, device='cuda'):
