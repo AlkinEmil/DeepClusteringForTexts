@@ -5,8 +5,9 @@ import torch.nn as nn
 
 import pandas as pd
 
-from deep_clustering import DeepClustering
+from algos.deep_clustering import DeepClustering
 from utils.training_and_visualisation import train
+from utils import topic_extraction
 
 class TextClustering(nn.Module):
     def __init__(self, n_classes, inp_dim, feat_dim, train_dataset,
@@ -72,7 +73,7 @@ class TextClustering(nn.Module):
         if self.kind == "deep clustering":
             self.model.to(device)
             N_ITERS = 20
-            LR = 1e-2
+            LR = 3e-3
             optimizer = torch.optim.Adam(self.model.parameters(), lr=LR)
             print("Phase 1: train embeddings")
             losses1 = train(self.model, base_embeds, optimizer, N_ITERS, device)
@@ -97,7 +98,15 @@ class TextClustering(nn.Module):
             inputs = inputs.to(self.model.centers.device)
             return self.model.transform_and_cluster(inputs, batch_size=batch_size)
     
-    def get_topics(self, texts, inputs, lang="english"):
+    def get_topics(self, texts, inputs, language="english"):
         if self.kind == "deep clustering":
             inputs = inputs.to(self.model.centers.device)
-            return self.model.get_topics(texts, inputs, lang=lang)
+            if self.model.mode == "train_embeds":
+                raise PermissionError("model must be in `train_clusters` mode")
+        _, pred_clusters = self.transform_and_cluster(inputs)
+        if language in ["english", "russian"]:
+            data_frame = pd.DataFrame({"text": texts, "pred_cluster": pred_clusters})
+            topics = topic_extraction.get_topics(data_frame, language=language)
+        else:
+            raise ValueError("Unknown language `{}`".format(lang))
+        return topics

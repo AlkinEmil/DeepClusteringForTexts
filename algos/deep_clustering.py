@@ -239,14 +239,3 @@ class DeepClustering(nn.Module):
            on_gpu=on_gpu,
         )
         return train_dataloader
-    
-    def get_topics(self, texts, inputs, lang="english"):
-        if self.mode == "train_embeds":
-            raise PermissionError("model must be in `train_clusters` mode")
-        _, pred_clusters = self.transform_and_cluster(inputs.to(self.centers.device))
-        if lang in ["english", "russian"]:
-            data_frame = pd.DataFrame({"text": texts, "pred_cluster": pred_clusters})
-            topics = topic_extraction.get_topics(data_frame, language=lang)
-        else:
-            raise ValueError("Unknown language `{}`".format(lang))
-        return topics
