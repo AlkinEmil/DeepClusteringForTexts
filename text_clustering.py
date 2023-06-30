@@ -6,68 +6,76 @@ import torch.nn as nn
 import pandas as pd
 
 from algos.deep_clustering import DeepClustering
+from algos.classic_clustering import ClassicClustering
 from utils.training_and_visualisation import train
 from utils import topic_extraction
 
 class TextClustering(nn.Module):
-    def __init__(self, n_classes, inp_dim, feat_dim, train_dataset,
+    def __init__(self, n_clusters, inp_dim, feat_dim, train_dataset,
                  loss_weights=None,
                  cluster_centers_init=None,
                  encoder=None,
                  decoder=None,
-                 kind="deep clustering"):
+                 kind="deep clustering",
+                 random_state=None):
         '''
-            n_classes: positive int - number of clusters
+            n_clusters: positive int - number of clusters
             inp_dim: positive int - dimension of the original space
             feat_dim: positive int - dimension of the feature space in which we do clustering
             alpha: float - parameter of the clustering loss
             hid_dim: positive int - dimension of the hidden space
-            cluster_centers_init: torch.Tensor of shape (n_classes, hid_dim)
+            cluster_centers_init: torch.Tensor of shape (n_clusters, hid_dim)
         '''
         super().__init__()
         
         
-        if not isinstance(n_classes, int):
-            raise TypeError("'n_classes' must be integer")
+        if not isinstance(n_clusters, int):
+            raise TypeError("'n_clusters' must be integer")
         if not isinstance(inp_dim, int):
             raise TypeError("'inp_dim' must be integer")
         if not isinstance(feat_dim, int):
             raise TypeError("'feat_dim' must be integer")
         if not isinstance(kind, str):
-            raise TypeError("'feat_dim' must be string")
+            raise TypeError("'kind' must be string")
         
-        if n_classes <= 0:
-            raise ValueError("'n_classes' must be positive")
+        if n_clusters <= 0:
+            raise ValueError("'n_clusters' must be positive")
         if inp_dim <= 0:
             raise ValueError("'inp_dim' must be positive")
         if feat_dim <= 0:
             raise ValueError("'feat_dim' must be positive")
         
-        self.n_classes = n_classes
+        self.n_clusters = n_clusters
         self.inp_dim = inp_dim
         self.feat_dim = feat_dim
-        self.encoder = None
-        self.decoder = None
-        self.kind = "deep clustering"
-        
-        if encoder is not None:
-            if decoder is None:
-                raise ValueError("decoder must be not None")
-            self.kind = "deep clustering"
-            self.encoder = encoder
-            self.decoder = decoder
+        #self.encoder = None
+        #self.decoder = None
+        self.kind = kind
             
         if self.kind == "deep clustering":
-            self.model = DeepClustering(n_classes=self.n_classes, 
-                                        inp_dim=self.inp_dim, 
-                                        feat_dim=self.feat_dim, 
+            if encoder is not None and decoder is None:
+                    raise ValueError("decoder must be not None")
+            if decoder is not None and encoder is None:
+                    raise ValueError("encoder must be not None")
+                #self.kind = "deep clustering"
+                #self.encoder = encoder
+                #self.decoder = decoder
+            self.model = DeepClustering(n_clusters,
+                                        inp_dim,
+                                        feat_dim,
+                                        train_dataset,
                                         alpha=4, 
-                                        train_dataset=train_dataset,
                                         loss_weights=[0.5, 0.5],
-                                        encoder=self.encoder,
-                                        decoder=self.decoder
+                                        encoder=encoder,
+                                        decoder=decoder
                                        )
-        
+        elif self.kind == "classic clustering":
+            self.model = ClassicClustering(n_clusters, 
+                                           inp_dim, 
+                                           feat_dim,
+                                           dim_reduction_type=None, 
+                                           clustering_type=None, 
+                                           random_state=random_state)
         
     def fit(self, base_embeds, device='cuda'):
         if self.kind == "deep clustering":
@@ -87,16 +95,22 @@ class TextClustering(nn.Module):
             print("Phase 2: train clusters")
             losses2 = train(self.model, base_embeds, optimizer, N_ITERS, device)
             return losses1, losses2
+        elif self.kind == "classic clustering":
+            self.model.fit(base_embeds)
+            return None, None
         
-    
     def get_centers(self):
         if self.kind == "deep clustering":
             return self.model.centers.cpu().detach().numpy()
+        elif self.kind == "classic clustering":
+            return self.model.clustering.cluster_centers_
     
     def transform_and_cluster(self, inputs, batch_size=None):
         if self.kind == "deep clustering":
             inputs = inputs.to(self.model.centers.device)
             return self.model.transform_and_cluster(inputs, batch_size=batch_size)
+        elif self.kind == "classic clustering":
+            return self.model.transform_and_cluster(inputs)
     
     def get_topics(self, texts, inputs, language="english"):
         if self.kind == "deep clustering":

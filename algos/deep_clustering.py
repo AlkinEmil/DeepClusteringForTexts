@@ -9,24 +9,24 @@ import pandas as pd
 from sklearn.cluster import KMeans
 
 from utils.parametric_umap import NumpyToTensorDataset, FastTensorDataLoader, ContrastiveLoss
-from utils import topic_extraction
 
 from annoy import AnnoyIndex
 from scipy.sparse import lil_matrix
 
 class DeepClustering(nn.Module):
-    def __init__(self, n_classes, inp_dim, feat_dim, alpha, train_dataset,
+    def __init__(self, n_clusters, inp_dim, feat_dim, train_dataset,
+                 alpha=2,
                  loss_weights=None,
                  cluster_centers_init=None,
                  encoder=None,
                  decoder=None):
         '''
-            n_classes: positive int - number of clusters
+            n_clusters: positive int - number of clusters
             inp_dim: positive int - dimension of the original space
             feat_dim: positive int - dimension of the feature space in which we do clustering
             alpha: float - parameter of the clustering loss
             hid_dim: positive int - dimension of the hidden space
-            cluster_centers_init: torch.Tensor of shape (n_classes, hid_dim)
+            cluster_centers_init: torch.Tensor of shape (n_clusters, hid_dim)
         '''
         super().__init__()
         
@@ -46,15 +46,15 @@ class DeepClustering(nn.Module):
             nn.Linear(100, inp_dim)
         )
         
-        if not isinstance(n_classes, int):
-            raise TypeError("'n_classes' must be integer")
+        if not isinstance(n_clusters, int):
+            raise TypeError("'n_clusters' must be integer")
         if not isinstance(inp_dim, int):
             raise TypeError("'inp_dim' must be integer")
         if not isinstance(feat_dim, int):
             raise TypeError("'feat_dim' must be integer")
         
-        if n_classes <= 0:
-            raise ValueError("'n_classes' must be positive")
+        if n_clusters <= 0:
+            raise ValueError("'n_clusters' must be positive")
         if inp_dim <= 0:
             raise ValueError("'inp_dim' must be positive")
         if feat_dim <= 0:
@@ -63,7 +63,7 @@ class DeepClustering(nn.Module):
         self.embd_layer = nn.Embedding.from_pretrained(train_dataset, freeze=True)
         self.umap_loss = ContrastiveLoss(loss_mode="umap")
         
-        self.K = n_classes
+        self.n_clusters = n_clusters
         self.inp_dim = inp_dim
         self.feat_dim = feat_dim
         self.alpha = alpha
@@ -80,14 +80,14 @@ class DeepClustering(nn.Module):
             self.loss_weights = loss_weights
         
         if cluster_centers_init is None:
-            self.centers = torch.nn.Parameter(torch.zeros(n_classes, feat_dim))
+            self.centers = torch.nn.Parameter(torch.zeros(n_clusters, feat_dim))
             torch.nn.init.xavier_uniform_(self.centers)
         else:
             if not isinstance(cluster_centers_init, torch.Tensor):
                 raise TypeError("cluster centers must of type `torch.Tensor`")
-            if cluster_centers_init.shape != (n_classes, feat_dim):
+            if cluster_centers_init.shape != (n_clusters, feat_dim):
                 raise ValueError("cluster_centers_init must have shape ({}, {}), but not ({})"
-                                 .format(n_classes, feat_dim, tuple(cluster_centers_init.shape)))
+                                 .format(n_clusters, feat_dim, tuple(cluster_centers_init.shape)))
             self.centers = nn.Parameter(cluster_centers_init)
         
         if encoder is None:
@@ -127,7 +127,7 @@ class DeepClustering(nn.Module):
         
         self.loss_weights = loss_weights
         z = self.enc(x)
-        kmeans = KMeans(n_clusters=self.K, random_state=42, n_init="auto").fit(z.cpu().detach())
+        kmeans = KMeans(n_clusters=self.n_clusters, random_state=42, n_init="auto").fit(z.cpu().detach())
         cluster_centers_init = torch.tensor(kmeans.cluster_centers_, device=self.centers.device)
         self.centers = nn.Parameter(cluster_centers_init)
         return self
@@ -136,7 +136,7 @@ class DeepClustering(nn.Module):
         assert z.shape[1] == self.feat_dim
         #x = self.enc(x)
         n = z.size(0)
-        m = self.K
+        m = self.n_clusters
         a = z.unsqueeze(1).expand(n, m, self.feat_dim)
         b = self.centers.unsqueeze(0).expand(n, m, self.feat_dim)
         pairwise_distances = torch.pow(a - b, 2).sum(2) 
