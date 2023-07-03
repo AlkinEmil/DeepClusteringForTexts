@@ -3,10 +3,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-import pandas as pd
+import time
 
 from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, silhouette_score
-
 
 from algos.deep_clustering import DeepClustering
 from algos.classic_clustering import ClassicClustering
