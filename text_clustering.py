@@ -56,6 +56,7 @@ class TextClustering(nn.Module):
         self.kind = kind
         self.data_frame = data_frame
         self.train_dataset = train_dataset
+        self.times = {}
             
         if self.kind == "deep clustering":
             if encoder is not None and decoder is None:
@@ -86,8 +87,12 @@ class TextClustering(nn.Module):
             LR = 3e-3
             optimizer = torch.optim.Adam(self.model.parameters(), lr=LR)
             print("Phase 1: train embeddings")
+            
+            start_time = time.time()
             losses1 = train(self.model, base_embeds, optimizer, N_ITERS, device)
-        
+            end_time = time.time()
+            self.times["dim_red"] = end_time - start_time
+            
             self.model.train_clusters(base_embeds.to(device), [0.33, 0.33, 0.34])
         
             N_ITERS = 8
@@ -95,10 +100,21 @@ class TextClustering(nn.Module):
             # Change mode of the model to `train_clusters` and change weights of losses:
             optimizer = torch.optim.Adam(self.model.parameters(), lr=LR)
             print("Phase 2: train clusters")
+            
+            start_time = time.time()
             losses2 = train(self.model, base_embeds, optimizer, N_ITERS, device)
+            end_time = time.time()
+            self.times["clust"] = end_time - start_time
+            
+            self.times["total"] = self.times["dim_red"] + self.times["clust"]
+            
             return losses1, losses2
+        
         elif self.kind == "classic clustering":
+            start_time = time.time()
             self.model.fit(base_embeds)
+            end_time = time.time()
+            self.times["total"] = end_time - start_time
             return None, None
         
     def get_centers(self):
