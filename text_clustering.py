@@ -5,13 +5,16 @@ import torch.nn as nn
 
 import pandas as pd
 
+from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, silhouette_score
+
+
 from algos.deep_clustering import DeepClustering
 from algos.classic_clustering import ClassicClustering
 from utils.training_and_visualisation import train
 from utils import topic_extraction
 
 class TextClustering(nn.Module):
-    def __init__(self, n_clusters, inp_dim, feat_dim, train_dataset,
+    def __init__(self, n_clusters, inp_dim, feat_dim, train_dataset, data_frame,
                  loss_weights=None,
                  cluster_centers_init=None,
                  encoder=None,
@@ -50,18 +53,15 @@ class TextClustering(nn.Module):
         self.n_clusters = n_clusters
         self.inp_dim = inp_dim
         self.feat_dim = feat_dim
-        #self.encoder = None
-        #self.decoder = None
         self.kind = kind
+        self.data_frame = data_frame
+        self.train_dataset = train_dataset
             
         if self.kind == "deep clustering":
             if encoder is not None and decoder is None:
                     raise ValueError("decoder must be not None")
             if decoder is not None and encoder is None:
                     raise ValueError("encoder must be not None")
-                #self.kind = "deep clustering"
-                #self.encoder = encoder
-                #self.decoder = decoder
             self.model = DeepClustering(n_clusters,
                                         inp_dim,
                                         feat_dim,
@@ -110,19 +110,58 @@ class TextClustering(nn.Module):
     def transform_and_cluster(self, inputs, batch_size=None):
         if self.kind == "deep clustering":
             inputs = inputs.to(self.model.centers.device)
-            return self.model.transform_and_cluster(inputs, batch_size=batch_size)
+            embeds, pred_clusters = self.model.transform_and_cluster(inputs, batch_size=batch_size)
         elif self.kind == "classic clustering":
-            return self.model.transform_and_cluster(inputs)
+            embeds, pred_clusters = self.model.transform_and_cluster(inputs)
+        
+        self.data_frame["pred_cluster"] = pred_clusters
+            
+        return embeds, pred_clusters
     
-    def get_topics(self, texts, inputs, language="english"):
+    def get_topics(self, inputs, language="english"):
         if self.kind == "deep clustering":
             inputs = inputs.to(self.model.centers.device)
             if self.model.mode == "train_embeds":
                 raise PermissionError("model must be in `train_clusters` mode")
         _, pred_clusters = self.transform_and_cluster(inputs)
         if language in ["english", "russian"]:
-            data_frame = pd.DataFrame({"text": texts, "pred_cluster": pred_clusters})
-            topics = topic_extraction.get_topics(data_frame, language=language)
+            topics_cluster_dict = topic_extraction.get_topics(self.data_frame, language=language)
         else:
             raise ValueError("Unknown language `{}`".format(lang))
-        return topics
+        return topics_cluster_dict
+    
+    def evaluate(self, use_true_clusters=False, language="english", verbose=True):
+        assert "pred_cluster" in self.data_frame.columns, "Predicted cluster labels are not in the dataframe"
+        pred_clusters = self.data_frame["pred_cluster"].to_list()
+        
+        metrics = dict()
+        
+        if len(set(pred_clusters)) > 1:
+            ss = silhouette_score(self.train_dataset, pred_clusters, metric='euclidean')
+        else:
+            ss = 0
+        
+        metrics["silhouette_score"] = ss
+        
+        if use_true_clusters:
+            assert "cluster" in self.data_frame.columns, "True cluster labels are not in the dataframe"
+            true_clusters = self.data_frame["cluster"].to_list()
+            
+            ars = adjusted_rand_score(true_clusters, pred_clusters)
+            ams = adjusted_mutual_info_score(true_clusters, pred_clusters)
+            
+            metrics["adjusted_rand_score"] = ars
+            metrics["adjusted_mutual_info_score"] = ams
+            
+        topics_cluster_dict = self.get_topics(self.train_dataset, language=language)
+        topics_coh_dict = topic_extraction.compute_coherence_for_clusters(topics_cluster_dict, self.data_frame)
+        
+        avg_coh = np.mean(list(topics_coh_dict.values()))
+        metrics["average_topic_coherence"] = avg_coh
+        
+        if verbose:
+            for k, v in metrics.items():
+                print(f"{k}: {np.round(v, 4)}")
+        
+        return metrics          
+        
