@@ -3,6 +3,16 @@ import pandas as pd
 
 import torch
 
+from nltk.tokenize import RegexpTokenizer
+from nltk.corpus import stopwords
+
+from russian_names import RussianNames
+
+
+########################################################################
+#                        Utils for Banking77                           #
+########################################################################
+
 def load_banking_data(path):
     data_train = pd.read_csv(path + "train.csv", sep=",")
     texts_train = data_train["text"].to_list()
@@ -56,3 +66,62 @@ def sample_banking_clusters(dataframe, raw_embeds, cluster_num_list, noise_clust
     
     return target_embeds, target_idxs, target_data, target_clusters, target_idxs
 
+########################################################################
+#                        Utils for Sber data                           #
+########################################################################
+
+RN = RussianNames(count=200, patronymic=False, surname=False)
+NAMES_LIST = []
+for name in RN:
+    NAMES_LIST.append(name)
+
+def clean_russian_dialogue(text, remove_stopwords=False, remove_names=False):
+    tokenizer = RegexpTokenizer(r'[a-zа-яёЁА-ЯA-Z]\w+\'?\w*')
+    noise_list = ["канал", "тикет", "закрыт", "спасибо", "благодарю"]
+    if remove_stopwords:
+        noise_list += stopwords.words('russian')
+    if remove_names:
+        noise_list += NAMES_LIST
+    tok_text = tokenizer.tokenize(text)
+    tok_text = [tok.lower() for tok in tok_text if tok.lower() not in noise_list]
+    clean_text = " ".join(tok_text)
+    return clean_text
+
+def read_and_clean_sber_data(path):
+    data = pd.read_csv(path + "/demo.csv")
+    data["cluster"] = data["category"].astype("category")
+    data["cluster"] = data["cluster"].cat.codes
+
+    clusters = data["cluster"].to_list()
+    
+    data["original_text"] = data["text"]
+    
+    data['text_with_stop'] = data['original_text'].apply(lambda row: clean_russian_dialogue(row))
+    data['text'] = data['original_text'].apply(
+        lambda row: clean_russian_dialogue(row, remove_stopwords=True, remove_names=True)
+    )
+    embeds = torch.load(path + "/sber_embeds/demo_embedings_all.pt")
+    
+    return data, clusters, embeds
+
+def sample_sber_clusters(cluster_num, data_frame, embeds, ignore_other=True, verbose=True):
+    clusters_all = data_frame["cluster"].to_list()
+    _, counts = np.unique(clusters_all, return_counts=True)
+    
+    top_k_clusters = np.argpartition(counts, -(cluster_num + 1))[-(cluster_num + 1):]
+    
+    if ignore_other:
+        top_k_clusters = top_k_clusters[top_k_clusters != 9] # ignore cluster 9 - "Другое"
+        
+    top_k_cats = list(data_frame[data_frame["cluster"].isin(top_k_clusters)]["category"].unique())
+    
+    if verbose:
+        print(f"Top {cluster_num} popular cluster nums: {top_k_clusters}")
+        print(f"Corresponding categories: {top_k_cats}")
+    
+    target_idxs = data_frame[data_frame["cluster"].isin(top_k_clusters)].index.to_list()
+    target_data = data_frame.loc[target_idxs]
+    target_embeds = embeds[target_idxs]
+    target_clusters = target_data["cluster"].to_list()
+    
+    return target_embeds, target_idxs, target_data, target_clusters
