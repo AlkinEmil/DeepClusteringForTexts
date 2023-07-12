@@ -7,17 +7,22 @@ import torch.nn.functional as F
 import pandas as pd
 
 from sklearn.cluster import KMeans
+from sklearn.metrics import pairwise_distances
 
 from utils.parametric_umap import NumpyToTensorDataset, FastTensorDataLoader, ContrastiveLoss
 
 from annoy import AnnoyIndex
 from scipy.sparse import lil_matrix
 
+#torch.autograd.set_detect_anomaly(True)
+
+
 class DeepClustering(nn.Module):
     def __init__(self, n_clusters, inp_dim, feat_dim, train_dataset,
                  alpha=2,
                  loss_weights=None,
                  cluster_centers_init=None,
+                 deep_model_type="DEC",
                  encoder=None,
                  decoder=None):
         '''
@@ -63,6 +68,10 @@ class DeepClustering(nn.Module):
         self.embd_layer = nn.Embedding.from_pretrained(train_dataset, freeze=True)
         self.umap_loss = ContrastiveLoss(loss_mode="umap")
         
+        if deep_model_type in ["DEC", "DCN", "DEC+DCN"]:
+            self.deep_model_type = deep_model_type
+        else:
+            raise ValueError("deep_model_type `{}`".format(deep_model_type))
         self.n_clusters = n_clusters
         self.inp_dim = inp_dim
         self.feat_dim = feat_dim
@@ -114,20 +123,34 @@ class DeepClustering(nn.Module):
                 raise ValueError("decoder must be a map: R^{feat_dim} \\to R^{inp_dim}")
             self.dec = decoder
         
-    def train_clusters(self, x, loss_weights):
-        assert isinstance(loss_weights, list), "loss_weights must be list"
-        assert len(loss_weights) == 3
-        assert isinstance(loss_weights[0], float)
-        assert isinstance(loss_weights[1], float)
-        assert isinstance(loss_weights[2], float)
-        loss_weights = np.array(loss_weights)
+    def train_clusters(self, x, loss_weights, random_state=42):
+        assert isinstance(loss_weights, dict), "loss_weights must be dict"
+        assert isinstance(loss_weights["recon"], float)
+        assert isinstance(loss_weights["geom"], float)
+        #assert isinstance(loss_weights[2], float)
+        if self.deep_model_type == "DEC":
+            assert len(loss_weights) == 3
+            assert isinstance(loss_weights["DEC"], float)
+        elif self.deep_model_type == "DCN":
+            assert len(loss_weights) == 4
+            assert isinstance(loss_weights['inv_pw_dist'], float)
+            assert isinstance(loss_weights['modified_DCN'], float)
+        elif self.deep_model_type == "DEC+DCN":
+            assert len(loss_weights) == 5
+            assert isinstance(loss_weights["DEC"], float)
+            assert isinstance(loss_weights['inv_pw_dist'], float)
+            assert isinstance(loss_weights['modified_DCN'], float)
+        else:
+            raise ValueError("deep_model_type `{}`".format(self.deep_model_type))
+
+        #loss_weights = np.array(loss_weights)
         #assert np.isclose(loss_weights.sum(), 1)
         
         self.mode = "train_clusters"
         
         self.loss_weights = loss_weights
         z = self.enc(x)
-        kmeans = KMeans(n_clusters=self.n_clusters, random_state=42, n_init="auto").fit(z.cpu().detach())
+        kmeans = KMeans(n_clusters=self.n_clusters, random_state=random_state, n_init="auto").fit(z.cpu().detach())
         cluster_centers_init = torch.tensor(kmeans.cluster_centers_, device=self.centers.device)
         self.centers = nn.Parameter(cluster_centers_init)
         return self
@@ -146,13 +169,51 @@ class DeepClustering(nn.Module):
         q = q_unnorm / q_unnorm.sum(1, keepdim=True)
         return q
     
-    def compute_clustering_loss(self, z):
+    def compute_DEC_loss(self, z):
         q = self.compute_q(z)
         f = q.sum(0, keepdim=True)
         p_unnorm = torch.pow(q, 3) / f
         p = p_unnorm / p_unnorm.sum(1, keepdim=True)
         kl_loss = nn.KLDivLoss(reduction='sum')#"batchmean")
         return kl_loss(torch.log(p), q)
+    
+    def compute_inverse_pairwise_distance_loss(self):
+        M = self.centers
+        #pw_dist = torch.zeros(self.n_clusters, self.n_clusters).requires_grad_(True)
+        pdist = torch.nn.PairwiseDistance(p=2)
+        loss = None
+        for i in range(1, self.n_clusters):
+            if loss is None:
+                loss = torch.pow(pdist(M, torch.roll(M, i, 0)), -2).sum()
+            else:
+                loss += torch.pow(pdist(M, torch.roll(M, i, 0)), -2).sum()
+        loss /= 2
+        return loss
+    
+    def get_radius(self):
+        M = self.centers
+        #pw_dist = torch.zeros(self.n_clusters, self.n_clusters).requires_grad_(True)
+        pdist = torch.nn.PairwiseDistance(p=2)
+        radius = None
+        for i in range(1, self.n_clusters):
+            if radius is None:
+                radius = torch.pow(pdist(M, torch.roll(M, i, 0)), -2).min()
+            else:
+                radius = torch.min(torch.pow(pdist(M, torch.roll(M, i, 0)), -2).min(), radius)
+        radius /= 3
+        return radius
+    
+    
+    def compute_modified_DCN_loss(self, item):
+        M = self.centers
+        pdist = torch.nn.PairwiseDistance(p=2)
+        loss = None
+        for i in range(self.n_clusters):
+            if loss is None:
+                loss = torch.min(F.relu(pdist(M[i], item) - self.get_radius())**2)
+            else:
+                loss = loss + torch.min(F.relu(pdist(M[i], item) - self.get_radius())**2)
+        return loss
     
     def compute_loss(self, item, neigh):
         neigh_input = torch.cat([item, neigh], dim=0)
@@ -163,24 +224,36 @@ class DeepClustering(nn.Module):
         
         x = self.embd_layer(item)
         z = self.enc(x)
-        if self.mode == "train_clusters":
-            clustering_loss = self.compute_clustering_loss(z)
         x_recon = self.dec(z)
         recon_loss = F.mse_loss(x_recon, x)
+        if self.mode == "train_clusters":
+            if self.deep_model_type == "DEC" or self.deep_model_type == "DEC+DCN":
+                DEC_loss = self.compute_DEC_loss(z)
+            if self.deep_model_type == "DCN" or self.deep_model_type == "DEC+DCN":
+                inv_pw_dist_loss = self.compute_inverse_pairwise_distance_loss()
+                modified_DCN_loss = self.compute_modified_DCN_loss(z)
+        
+        loss = {
+            "recon_loss": recon_loss,
+            "geom_loss": geom_loss
+        }
         
         if self.mode == "train_embeds":
             total_loss = recon_loss * self.loss_weights[0] + geom_loss * self.loss_weights[1]
         else:
-            total_loss = recon_loss * self.loss_weights[0] + \
-                         geom_loss * self.loss_weights[1] + \
-                         clustering_loss * self.loss_weights[2]
-        loss = {
-            "recon_loss": recon_loss,
-            "geom_loss": geom_loss,
-            "total_loss": total_loss
-        }
-        if self.mode == "train_clusters":
-            loss["clustering_loss"] = clustering_loss
+            total_loss = recon_loss * self.loss_weights['recon'] + \
+                         geom_loss * self.loss_weights['geom']
+            if self.deep_model_type == "DEC" or self.deep_model_type == "DEC+DCN":
+                total_loss = total_loss + DEC_loss * self.loss_weights['DEC']
+                loss["DEC_loss"] = DEC_loss
+            if self.deep_model_type == "DCN" or self.deep_model_type == "DEC+DCN":
+                total_loss = total_loss + \
+                             inv_pw_dist_loss * self.loss_weights['inv_pw_dist'] + \
+                             modified_DCN_loss * self.loss_weights['modified_DCN']
+                loss["inv_pw_dist_loss"] = inv_pw_dist_loss
+                loss["modified_DCN_loss"] = modified_DCN_loss
+        
+        loss["total_loss"] = total_loss
         return loss
     
     def transform(self, inputs, batch_size=None):

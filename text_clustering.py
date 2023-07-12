@@ -12,6 +12,9 @@ from algos.classic_clustering import ClassicClustering
 from utils.training_and_visualisation import train
 from utils import topic_extraction
 
+import umap.umap_ as umap
+import matplotlib.pyplot as plt
+
 class TextClustering(nn.Module):
     def __init__(self, n_clusters, inp_dim, feat_dim, train_dataset, data_frame,
                  loss_weights=None,
@@ -21,6 +24,8 @@ class TextClustering(nn.Module):
                  kind="deep clustering",
                  dim_reduction_type=None, 
                  clustering_type=None,
+                 deep_model_type="DEC",
+                 deep_params=None,
                  random_state=None):
         '''
             n_clusters: positive int - number of clusters
@@ -56,6 +61,8 @@ class TextClustering(nn.Module):
         self.data_frame = data_frame
         self.train_dataset = train_dataset
         self.times = {}
+        self.deep_model_type = deep_model_type
+        self.deep_params = deep_params
             
         if self.kind == "deep clustering":
             if encoder is not None and decoder is None:
@@ -68,6 +75,7 @@ class TextClustering(nn.Module):
                                         train_dataset,
                                         alpha=4, 
                                         loss_weights=[0.5, 0.5],
+                                        deep_model_type=deep_model_type,
                                         encoder=encoder,
                                         decoder=decoder
                                        )
@@ -78,30 +86,61 @@ class TextClustering(nn.Module):
                                            dim_reduction_type=dim_reduction_type, 
                                            clustering_type=clustering_type, 
                                            random_state=random_state)
+        else:
+            raise ValueError("Unknown kind `{}`".format(kind))
         
     def fit(self, base_embeds, device='cuda'):
         if self.kind == "deep clustering":
+            N_ITERS_1 = 20
+            LR_1 = 3e-3
+            N_ITERS_2 = 8
+            LR_2 = 1e-4
+            LOSS_WEIGHTS = {
+                "recon": 1.,
+                "geom": 1.
+            }
+            if self.deep_model_type == "DEC" or self.deep_model_type == "DEC+DCN":
+                LOSS_WEIGHTS["DEC"] = 1.
+            if self.deep_model_type == "DCN" or self.deep_model_type == "DEC+DCN":
+                LOSS_WEIGHTS["inv_pw_dist"] = 1.
+                LOSS_WEIGHTS["modified_DCN"] = 1.
+            #if self.deep_model_type == "DEC":
+            #    LOSS_WEIGHTS = [1., 1., 1.]
+            #elif self.deep_model_type == "DCN":
+            #    LOSS_WEIGHTS = [1., 1., 1., 1.]
+            #elif self.deep_model_type == "DEC+DCN":
+            #    LOSS_WEIGHTS = [1., 1., 1., 1., 1.]
+            #else:
+            #    raise ValueError("Unknown deep_model_type `{}`".format(self.deep_model_type))
+            
+            if self.deep_params is not None:
+                N_ITERS_1 = self.deep_params.get("N_ITERS_1", N_ITERS_1)
+                LR_1 = self.deep_params.get("LR_1", LR_1)
+                N_ITERS_2 = self.deep_params.get("N_ITERS_2", N_ITERS_2)
+                LR_2 = self.deep_params.get("LR_2", LR_2)
+                LOSS_WEIGHTS = self.deep_params.get("loss_weights", LOSS_WEIGHTS)
+            
             self.model.to(device)
-            N_ITERS = 20
-            LR = 3e-3
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=LR)
+            
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=LR_1)
             print("Phase 1: train embeddings")
             
             start_time = time.time()
-            losses1 = train(self.model, base_embeds, optimizer, N_ITERS, device)
+            losses1 = train(self.model, base_embeds, optimizer, N_ITERS_1, device)
             end_time = time.time()
             self.times["dim_red"] = end_time - start_time
             
-            self.model.train_clusters(base_embeds.to(device), [0.33, 0.33, 0.34])
+            
+            
+            self.model.train_clusters(base_embeds.to(device), LOSS_WEIGHTS)
         
-            N_ITERS = 8
-            LR = 1e-4
+            
             # Change mode of the model to `train_clusters` and change weights of losses:
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=LR)
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=LR_2)
             print("Phase 2: train clusters")
             
             start_time = time.time()
-            losses2 = train(self.model, base_embeds, optimizer, N_ITERS, device)
+            losses2 = train(self.model, base_embeds, optimizer, N_ITERS_2, device)
             end_time = time.time()
             self.times["clust"] = end_time - start_time
             
@@ -121,6 +160,27 @@ class TextClustering(nn.Module):
             return self.model.centers.cpu().detach().numpy()
         elif self.kind == "classic clustering":
             return self.model.clustering.cluster_centers_
+        
+    def visualize_2d(self, inputs, true_cluster_labels, random_state=None):
+        if self.kind == "deep clustering":
+            inputs = inputs.to(self.model.centers.device)
+        dec_features, pred_clusters = self.transform_and_cluster(inputs)
+        dim_reduction = umap.UMAP(random_state=random_state, n_components=2)
+        umap_features = dim_reduction.fit_transform(dec_features)
+        topics = self.get_topics(inputs)
+        new_centers = dim_reduction.transform(self.get_centers())
+        _, pred_clusters = self.transform_and_cluster(inputs)
+        plt.figure(figsize=(9, 9))
+        plt.scatter(*umap_features.T, c=true_cluster_labels, s=1.0)
+        for i, (x, y) in enumerate(new_centers):
+            if topics.get(i) is not None:
+                plt.text(x, y, "\n".join(topics[i]), 
+                         horizontalalignment='center', 
+                         verticalalignment='center', 
+                         fontsize=12)#, backgroundcolor='white')
+        plt.gca().set_aspect("equal")
+        plt.axis("off")
+        plt.show()
     
     def transform_and_cluster(self, inputs, batch_size=None):
         if self.kind == "deep clustering":
