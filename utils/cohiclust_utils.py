@@ -314,7 +314,6 @@ def test_cohiclust(model, epoch, test_loader=None, device="cuda", verbose=True):
                     'Test Epoch: [{}/{}] NMI:{:.2f}'.format(epoch, model.cfg.training.epochs, actuall_nmi)
                 )
 
-    #return total_top1 /total_num * 100, total_top5 / total_num * 100, actuall_nmi, predictions, labels
     return actuall_nmi, predictions, labels
 
 
