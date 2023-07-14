@@ -5,17 +5,17 @@ model:
   drop_prob: 0.25
   linear_dims_list: [2048, 2048, 1024]
 dataset:
-  dataset_name: 'demo5'
-  number_classes: 5
+  dataset_name: 'demo10'
+  number_classes: 10
 tree:
-  tree_level: 4
+  tree_level: 5
 simclr:
   temperature: 0.5
   k: 10
   feature_dim_projection_head: 128
 training:
   epochs: 50
-  batch_size: 64
+  batch_size: 512
   pretraining_epochs: 20
   start_pruning_epochs: 30
-  leaves_to_prune: 11
+  leaves_to_prune: 20

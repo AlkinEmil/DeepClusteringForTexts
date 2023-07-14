@@ -1,6 +1,6 @@
 model:
   name: 'custom'
-  inp_dim: 1024
+  inp_dim: 1536
   out_dim: 128
   drop_prob: 0.25
   linear_dims_list: [2048, 2048, 1024]
