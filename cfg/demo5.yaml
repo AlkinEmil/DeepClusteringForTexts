@@ -5,17 +5,17 @@ model:
   drop_prob: 0.25
   linear_dims_list: [2048, 2048, 1024]
 dataset:
-  dataset_name: 'banking77'
+  dataset_name: 'demo5'
   number_classes: 5
 tree:
-  tree_level: 7
+  tree_level: 4
 simclr:
   temperature: 0.5
   k: 10
   feature_dim_projection_head: 128
 training:
   epochs: 50
-  batch_size: 512
+  batch_size: 64
   pretraining_epochs: 20
   start_pruning_epochs: 30
-  leaves_to_prune: 50
+  leaves_to_prune: 11

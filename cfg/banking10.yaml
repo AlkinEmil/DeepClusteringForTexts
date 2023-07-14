@@ -2,8 +2,10 @@ model:
   name: 'custom'
   inp_dim: 1024
   out_dim: 128
+  drop_prob: 0.25
+  linear_dims_list: [2048, 2048, 1024]
 dataset:
-  dataset_name: 'banking5'
+  dataset_name: 'banking10'
   number_classes: 5
 tree:
   tree_level: 4

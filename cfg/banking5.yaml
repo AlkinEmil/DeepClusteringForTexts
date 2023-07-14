@@ -2,6 +2,8 @@ model:
   name: 'custom'
   inp_dim: 1024
   out_dim: 128
+  drop_prob: 0.25
+  linear_dims_list: [2048, 2048, 1024]
 dataset:
   dataset_name: 'banking5'
   number_classes: 5
