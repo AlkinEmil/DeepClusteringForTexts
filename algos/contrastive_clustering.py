@@ -6,26 +6,40 @@ from torch.utils.data import DataLoader
 from utils.cohiclust_utils import Banking1NNPair
 
 class VanillaMLP(nn.Module):
-    def __init__(self, inp_dim, out_dim, drop_prob=0.25):
+    def __init__(self, cfg):
         super().__init__()
         
-        self.net = nn.Sequential(
-            nn.Linear(inp_dim, 2048),
+        inp_dim = cfg.model.inp_dim
+        out_dim = cfg.model.out_dim
+        linear_dims_list = cfg.model.linear_dims_list
+        drop_prob = cfg.model.drop_prob
+        assert len(linear_dims_list) > 1, "Need at least 2 linear layers"
+        
+        self.inp_layer = nn.Sequential(
+            nn.Linear(inp_dim, linear_dims_list[0]), 
             nn.ReLU(),
-            nn.BatchNorm1d(2048),
-            nn.Dropout(p=drop_prob),
-            nn.Linear(2048, 2048),
-            nn.ReLU(),
-            nn.BatchNorm1d(2048),
-            nn.Dropout(p=drop_prob),
-            nn.Linear(2048, 1024),
-            nn.ReLU(),
-            nn.BatchNorm1d(1024),
-            nn.Dropout(p=drop_prob),
-            nn.Linear(1024, out_dim)
+            nn.BatchNorm1d(linear_dims_list[0]),
+            nn.Dropout(drop_prob)
         )
+        
+        self.main_block = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(linear_dims_list[i], linear_dims_list[i + 1]), 
+                nn.ReLU(),
+                nn.BatchNorm1d(linear_dims_list[i + 1]),
+                nn.Dropout(drop_prob)
+            )
+            for i in range(len(linear_dims_list) - 1)
+        ])
+        
+        self.out_layer = nn.Linear(linear_dims_list[-1], out_dim)
+                
     def forward(self, inputs):
-        return self.net(inputs)
+        out = self.inp_layer(inputs)
+        for block in self.main_block:
+            out = block(out)
+        out = self.out_layer(out)
+        return out
     
     
 class CoHiClustModel(nn.Module):
@@ -38,7 +52,7 @@ class CoHiClustModel(nn.Module):
         self.embeds = embeds
         self.n_clusters = n_clusters
         
-        self.f = VanillaMLP(cfg.model.inp_dim, cfg.model.out_dim)
+        self.f = VanillaMLP(cfg)
         
         self.g = nn.Sequential(
             nn.Linear(cfg.model.out_dim, 512, bias=False), nn.BatchNorm1d(512),
@@ -98,10 +112,3 @@ class CoHiClustModel(nn.Module):
         self.test_loader = DataLoader(
             test_data, batch_size=self.batch_size, shuffle=False, num_workers=2, pin_memory=True
         )
-        
-    
-    
-    
-    
-    
-    
