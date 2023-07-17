@@ -60,7 +60,7 @@ class ClassicClustering():
         elif dim_reduction_type == "tsne_exact":
             self.dim_reduction = TSNE(n_components=feat_dim, method='exact', random_state=random_state, n_jobs=-1)
         elif dim_reduction_type == "pacmap":
-            self.dim_reduction = PaCMAP(n_components=2)
+            self.dim_reduction = PaCMAP(n_components=feat_dim)
         else:
             raise ValueError("Unknown dim reduction method `{}`".format(dim_reduction_type))
             
