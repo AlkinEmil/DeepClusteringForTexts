@@ -74,6 +74,8 @@ class ClassicClustering():
         elif clustering_type == "mean_shift":
             assert bandwidth is not None, "Define MeanShift parameter"
             self.clustering = MeanShift(bandwidth=bandwidth)
+        elif clustering_type == "gmm":
+            self.clustering = GaussianMixture(n_components=n_clusters, random_state=random_state)
         else:
             raise ValueError("Unknown clustering method `{}`".format(clustering_type))
 
