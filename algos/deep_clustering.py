@@ -1,56 +1,87 @@
 import numpy as np
+import pandas as pd
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-import pandas as pd
+from torch.utils.data import DataLoader
 
 from sklearn.cluster import KMeans
-
-from utils.parametric_umap import NumpyToTensorDataset, FastTensorDataLoader, ContrastiveLoss
-
 from annoy import AnnoyIndex
 from scipy.sparse import lil_matrix
 
-class DeepClustering(nn.Module):
-    def __init__(self, n_clusters, inp_dim, feat_dim, train_dataset,
-                 alpha=2,
-                 loss_weights=None,
-                 cluster_centers_init=None,
-                 encoder=None,
-                 decoder=None):
-        '''
-            n_clusters: positive int - number of clusters
-            inp_dim: positive int - dimension of the original space
-            feat_dim: positive int - dimension of the feature space in which we do clustering
-            alpha: float - parameter of the clustering loss
-            hid_dim: positive int - dimension of the hidden space
-            cluster_centers_init: torch.Tensor of shape (n_clusters, hid_dim)
+from typing import List, Dict, Tuple
+
+from utils.parametric_umap import NumpyToTensorDataset, FastTensorDataLoader, ContrastiveLoss
+
+class VanillaMLP(nn.Module):
+    '''Vanilla MLP encoder/decoder for the DeepClustering model.'''
+    def __init__(self, inp_dim: int, out_dim: int) -> None:
+        '''Initialize VanillaMLP net.
+        
+            :param inp_dim - input dimensionality
+            :param out_dim - output dimensionality
         '''
         super().__init__()
         
-        SIMPLE_ENCODER = nn.Sequential(
+        if not isinstance(inp_dim, int):
+            raise TypeError("'inp_dim' must be integer")
+        if not isinstance(out_dim, int):
+            raise TypeError("'out_dim' must be integer")
+            
+        if inp_dim <= 0:
+            raise ValueError("'inp_dim' must be positive")
+        if out_dim <= 0:
+            raise ValueError("'out_dim' must be positive")
+        
+        self.net = nn.Sequential(
             nn.Linear(inp_dim, 100),
             nn.ReLU(),
             nn.Linear(100, 100),
             nn.ReLU(),
-            nn.Linear(100, feat_dim)
+            nn.Linear(100, out_dim)
         )
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        '''Forward pass through the model.'''
+        return self.net(inputs)
 
-        SIMPLE_DECODER = nn.Sequential(
-            nn.Linear(feat_dim, 100),
-            nn.ReLU(),
-            nn.Linear(100, 100),
-            nn.ReLU(),
-            nn.Linear(100, inp_dim)
-        )
+class DeepClustering(nn.Module):
+    '''Deep clustering model (DEC). Implementation is based on https://arxiv.org/abs/1511.06335'''
+    def __init__(self,
+                 n_clusters: int,
+                 inp_dim: int,
+                 train_dataset: torch.Tensor,
+                 feat_dim: int = None,
+                 alpha: float = 2,
+                 loss_weights: List[float] = None,
+                 cluster_centers_init: torch.Tensor = None,
+                 encoder: nn.Module = None,
+                 decoder: nn.Module = None
+                ) -> None:
+        '''Initialize DeepClustering model.
         
+            :param n_clusters: positive int - number of clusters
+            :param inp_dim: positive int - dimension of the original space
+            :param feat_dim: positive int - dimension of the feature space in which we do clustering
+            :param alpha: float - parameter of the clustering loss
+            :param loss_weights - list of weighting coefficients for losses (reconstruction, UMAP and clustering)
+            :param cluster_centers_init - torch.Tensor of shape (n_clusters, hid_dim)
+            :param encoder - if not None, use custom nn.Module as encoder
+            :param decoder - if not None, use custom nn.Module as decoder
+        '''
+        super().__init__()
+        
+        if feat_dim is None:
+            feat_dim = inp_dim
+                
         if not isinstance(n_clusters, int):
             raise TypeError("'n_clusters' must be integer")
         if not isinstance(inp_dim, int):
             raise TypeError("'inp_dim' must be integer")
-        if not isinstance(feat_dim, int):
+        #if not isinstance(train_dataset, torch.Tensor):
+        #    raise TypeError("'train_dataset' must be torch.Tensor")
+        
+        if (feat_dim is not None) and (not isinstance(feat_dim, int)):
             raise TypeError("'feat_dim' must be integer")
         
         if n_clusters <= 0:
@@ -76,7 +107,6 @@ class DeepClustering(nn.Module):
             assert len(loss_weights) == 2
             assert isinstance(loss_weights[0], float)
             assert isinstance(loss_weights[1], float)
-            #assert np.isclose(loss_weights[0] + loss_weights[1], 1)
             self.loss_weights = loss_weights
         
         if cluster_centers_init is None:
@@ -91,7 +121,7 @@ class DeepClustering(nn.Module):
             self.centers = nn.Parameter(cluster_centers_init)
         
         if encoder is None:
-            self.enc = SIMPLE_ENCODER
+            self.enc = VanillaMLP(inp_dim, feat_dim)
         else:
             if not isinstance(encoder, nn.Module):
                 raise TypeError("encoder must of type `torch.nn.Module`")
@@ -103,7 +133,7 @@ class DeepClustering(nn.Module):
             self.enc = encoder
         
         if decoder is None:
-            self.dec = SIMPLE_DECODER
+            self.dec = VanillaMLP(feat_dim, inp_dim)
         else:
             if not isinstance(decoder, nn.Module):
                 raise TypeError("decoder must of type `torch.nn.Module`")
@@ -114,14 +144,18 @@ class DeepClustering(nn.Module):
                 raise ValueError("decoder must be a map: R^{feat_dim} \\to R^{inp_dim}")
             self.dec = decoder
         
-    def train_clusters(self, x, loss_weights):
+    def train_clusters(self, x: torch.Tensor, loss_weights: List[float]):
+        '''Turn the model into "train_clusters" mode.
+        
+            :param x - input tensor of embeddings
+            :param loss_weights - list of weight coefficients for losses (reconstruction, UMAP and clustering)
+        '''
         assert isinstance(loss_weights, list), "loss_weights must be list"
         assert len(loss_weights) == 3
         assert isinstance(loss_weights[0], float)
         assert isinstance(loss_weights[1], float)
         assert isinstance(loss_weights[2], float)
         loss_weights = np.array(loss_weights)
-        #assert np.isclose(loss_weights.sum(), 1)
         
         self.mode = "train_clusters"
         
@@ -132,44 +166,63 @@ class DeepClustering(nn.Module):
         self.centers = nn.Parameter(cluster_centers_init)
         return self
 
-    def compute_q(self, z):
+    def compute_q(self, z: torch.Tensor) -> torch.Tensor:
+        '''Compute surrogate q distribution.
+        
+            :param z - embeddings (output of encoder)
+            :return q - surrogate cluster distribution
+        '''
         assert z.shape[1] == self.feat_dim
-        #x = self.enc(x)
         n = z.size(0)
         m = self.n_clusters
         a = z.unsqueeze(1).expand(n, m, self.feat_dim)
         b = self.centers.unsqueeze(0).expand(n, m, self.feat_dim)
         pairwise_distances = torch.pow(a - b, 2).sum(2) 
-        #print("PD:", pairwise_distances)
         
         q_unnorm = torch.pow(pairwise_distances / self.alpha + 1, -(self.alpha+1)/2)
         q = q_unnorm / q_unnorm.sum(1, keepdim=True)
         return q
     
-    def compute_clustering_loss(self, z):
+    def compute_clustering_loss(self, z: torch.Tensor) -> torch.Tensor:
+        '''Compute clustering (DEC) loss.
+        
+            :param z - embeddings (output of encoder)
+            :return KL(p||q) - value of clustering loss function 
+        '''
         q = self.compute_q(z)
         f = q.sum(0, keepdim=True)
         p_unnorm = torch.pow(q, 3) / f
         p = p_unnorm / p_unnorm.sum(1, keepdim=True)
-        kl_loss = nn.KLDivLoss(reduction='sum')#"batchmean")
+        kl_loss = nn.KLDivLoss(reduction='sum')
         return kl_loss(torch.log(p), q)
     
-    def compute_loss(self, item, neigh):
+    def compute_loss(self, item: torch.Tensor, neigh: torch.Tensor) -> Dict[str, torch.Tensor]:
+        '''Compute all losses.
+        
+            :param item - batch of text embedding
+            :param neigh - batch of embedding of corresponding neighbor texts
+            :return dictionary with losses: reconstruction MSE, geometric (UMAP) loss and DEC loss
+        '''
+        # compute geometric (UMAP) loss
         neigh_input = torch.cat([item, neigh], dim=0)
         enc_neigh_input = self.enc(self.embd_layer(neigh_input))
         force_resample = 0
         geom_loss = self.umap_loss(enc_neigh_input, force_resample=force_resample)
         
-        
+        # compute reconstruction loss
         x = self.embd_layer(item)
         z = self.enc(x)
-        if self.mode == "train_clusters":
-            clustering_loss = self.compute_clustering_loss(z)
         x_recon = self.dec(z)
         recon_loss = F.mse_loss(x_recon, x)
         
+        # compute clustering (DEC) loss
+        if self.mode == "train_clusters":
+            clustering_loss = self.compute_clustering_loss(z)
+        
+        # total loss is a weighted sum of 2 or 3 losses, depending on the training stage
         if self.mode == "train_embeds":
             total_loss = recon_loss * self.loss_weights[0] + geom_loss * self.loss_weights[1]
+            
         else:
             total_loss = recon_loss * self.loss_weights[0] + \
                          geom_loss * self.loss_weights[1] + \
@@ -179,17 +232,22 @@ class DeepClustering(nn.Module):
             "geom_loss": geom_loss,
             "total_loss": total_loss
         }
+        
         if self.mode == "train_clusters":
             loss["clustering_loss"] = clustering_loss
+            
         return loss
     
-    def transform(self, inputs, batch_size=None):
+    def transform(self, inputs: np.array, batch_size: int = None) -> np.array:
+        '''Apply encoder and transform text embeddings.
+        
+            :param inputs - numpy array with input text embeddings
+            :param batch_size - batch size
+            :return embd - transformed text embeddings
+        '''
         device = inputs.device
         inputs = inputs.reshape(inputs.shape[0], -1)
-        #if isinstance(inputs, np.ndarray):
         dataset_plain = NumpyToTensorDataset(inputs.detach().cpu().numpy())
-        #else:
-        #    dataset_plain = torch.utils.data.TensorDataset(inputs)
         dl_unshuf = torch.utils.data.DataLoader(
             dataset_plain,
             shuffle=False,
@@ -199,24 +257,39 @@ class DeepClustering(nn.Module):
 
         return embd
     
-    def transform_and_cluster(self, inputs, batch_size=None):
-        device = inputs.device
-        inputs = inputs.reshape(inputs.shape[0], -1)
-        #if isinstance(inputs, np.ndarray):
-        dataset_plain = NumpyToTensorDataset(inputs.detach().cpu().numpy())
-        #else:
-        #    dataset_plain = torch.utils.data.TensorDataset(inputs)
-        dl_unshuf = torch.utils.data.DataLoader(
-            dataset_plain,
-            shuffle=False,
-            batch_size=batch_size,
-        )
-        embds = np.vstack([self.enc(batch.to(device)).detach().cpu().numpy() for batch in dl_unshuf])
+    def transform_and_cluster(self, inputs: np.array, batch_size: int = None) -> Tuple[np.array, np.array]:
+        '''Trasform text embeddings and clusterize them.
+        
+            :param inputs - numpy array with input text embeddings
+            :param batch_size - batch size
+            :return a tuple of:
+                * embd - transformed text embeddings
+                * clusters - predicted cluster assignments
+        '''
+        embds = self.transform(inputs, batch_size)
         centers = self.centers.cpu().detach().numpy()
         clusters = np.vstack([np.argmin(np.sum(np.power(embd - centers, 2), axis=1)) for embd in embds])[:, 0]
         return embds, clusters
     
-    def create_dataloader(self, base_embeds, n_neighbours=40, annoy_trees=50, shuffle=True, batch_size=128, on_gpu=True):
+    def create_dataloader(
+        self,
+        base_embeds: np.array,
+        n_neighbours: int = 40,
+        annoy_trees: int = 50,
+        shuffle: bool = True,
+        batch_size: int = 128,
+        on_gpu: bool = True
+    ) -> DataLoader:
+        '''Create dataloader of neighbor pairs for UMAP loss using annoy.
+        
+            :param base_embeds: numpy array with input text embeddings
+            :param n_neighbours: number of nearest neighbour to find
+            :param annoy_trees - parameter for approximate nearest neighbor search
+            :param shuffle - if True, shuffle the dataset
+            :param batch_size - batch size
+            :param on_gpu - if True, move tensors to GPU
+            :return train_dataloader of neighbor pairs
+        '''
         annoy = AnnoyIndex(self.inp_dim, "euclidean")
         [annoy.add_item(i, x) for i, x in enumerate(base_embeds)]
         annoy.build(annoy_trees)
@@ -228,7 +301,7 @@ class DeepClustering(nn.Module):
             neighs_, _ = annoy.get_nns_by_item(i, n_neighbours + 1, include_distances=True)
             neighs = neighs_[1:]
             adj[i, neighs] = 1
-            adj[neighs, i] = 1  # symmetrize on the fly
+            adj[neighs, i] = 1
 
         neighbor_mat = adj.tocsr()
         
@@ -238,4 +311,5 @@ class DeepClustering(nn.Module):
            batch_size=batch_size,
            on_gpu=on_gpu,
         )
+        
         return train_dataloader
