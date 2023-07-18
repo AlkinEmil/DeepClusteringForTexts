@@ -6,7 +6,8 @@ model:
   linear_dims_list: [2048, 2048, 1024]
 dataset:
   dataset_name: 'demo3'
-  number_classes: 5
+  number_classes: 3
+  n_neighb: 5
 tree:
   tree_level: 3
 simclr:

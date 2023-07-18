@@ -7,6 +7,7 @@ model:
 dataset:
   dataset_name: 'banking20'
   number_classes: 5
+  n_neighb: 5
 tree:
   tree_level: 5
 simclr:

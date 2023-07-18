@@ -7,6 +7,7 @@ model:
 dataset:
   dataset_name: 'demo10'
   number_classes: 10
+  n_neighb: 5
 tree:
   tree_level: 5
 simclr:
