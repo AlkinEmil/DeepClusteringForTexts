@@ -6,12 +6,22 @@ import os
 
 
 def plot_losses(losses, title):
-    plt.figure(figsize=(9, 6))
-    plt.title(title)
-    for i in losses:
-        plt.plot(np.arange(len(losses[i])), losses[i], label=str(i))
-    plt.xlabel("Number of iterations")
-    plt.legend()
+    if len(losses) == 2:
+        assert len(losses) == len(title)
+        fig, axs = plt.subplots(1, 2, figsize=(12, 4))
+        for i in [0, 1]:
+            for j in losses[i]:
+                axs[i].plot(np.arange(len(losses[i][j])), losses[i][j], label=str(j))
+            axs[i].set_title(title[i])
+            axs[i].set_xlabel("Number of iterations")
+            axs[i].legend()
+    else:
+        plt.figure(figsize=(9, 6))
+        plt.title(title)
+        for i in losses:
+            plt.plot(np.arange(len(losses[i])), losses[i], label=str(i))
+        plt.xlabel("Number of iterations")
+        plt.legend()
     plt.show()
     
 def plot_clusters_with_centers(model, base_embeds, clusters=None, title="Deep Embedding Clustering for Banking77"):

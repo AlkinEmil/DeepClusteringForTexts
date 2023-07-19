@@ -216,20 +216,18 @@ def evaluate_classic_clustering(
             (f", feat_dim = {n_components}" if n_components is not None else "")
         )
            
-        res_df = res_df.append(
-            {
-                "Dim reduction": dim_rediction,
-                "Clustering": clustering_type,
-                "Best params": " ".join(best_params),
-                "Adjusted Rand": best_metrics["adjusted_rand_score"],
-                "Adjusted Mutual Info": best_metrics["adjusted_mutual_info_score"],
-                "Silhouette Score": best_metrics["silhouette_score"],
-                "Avg topic coherence": best_metrics["average_topic_coherence"],
-                "Dim red time, sec": times["dim_red"],
-                "Clustering time, sec": times["clust"]
-            },
-            ignore_index=True
-        )
+        new_row = pd.DataFrame.from_dict({
+                "Dim reduction": [dim_rediction],
+                "Clustering": [clustering_type],
+                "Best params": [" ".join(best_params)],
+                "Adjusted Rand": [best_metrics["adjusted_rand_score"]],
+                "Adjusted Mutual Info": [best_metrics["adjusted_mutual_info_score"]],
+                "Silhouette Score": [best_metrics["silhouette_score"]],
+                "Avg topic coherence": [best_metrics["average_topic_coherence"]],
+                "Dim red time, sec": [times["dim_red"]],
+                "Clustering time, sec": [times["clust"]]
+            })
+        res_df = pd.concat([res_df, new_row], ignore_index=True)
     
     res_df = res_df.round(4)
     
