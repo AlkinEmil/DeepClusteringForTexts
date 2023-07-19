@@ -76,7 +76,7 @@ class TextClustering(nn.Module):
             raise ValueError("'n_clusters' must be positive")
         if inp_dim <= 0:
             raise ValueError("'inp_dim' must be positive")
-        if feat_dim <= 0:
+        if feat_dim is not None and feat_dim <= 0:
             raise ValueError("'feat_dim' must be positive")
         
         self.n_clusters = n_clusters
