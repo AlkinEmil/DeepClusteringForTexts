@@ -20,15 +20,18 @@ from utils.training_and_visualisation import train
 from utils.cohiclust_utils import train_cohiclust, test_cohiclust, RepeatPairDataset
 from utils import topic_extraction
 
+import umap.umap_ as umap
+import matplotlib.pyplot as plt
+
 class TextClustering(nn.Module):
     '''Wrapper for text clustering models.'''
     def __init__(self,
                  n_clusters: int,
                  inp_dim: int,
+                 feat_dim: int,
                  train_dataset: torch.Tensor,
                  data_frame: pd.DataFrame,
                  cohiclust_cfg: OmegaConf = None,
-                 feat_dim: int = None,
                  loss_weights: List[float] = None,
                  cluster_centers_init: torch.Tensor = None,
                  encoder: nn.Module = None,
@@ -36,6 +39,8 @@ class TextClustering(nn.Module):
                  kind: str = "deep clustering",
                  dim_reduction_type: str = None, 
                  clustering_type: str = None,
+                 deep_model_type="DEC",
+                 deep_params: dict = None,
                  random_state: int = None,
                  min_samples: int = None,
                  min_cluster_size: int = None,
@@ -57,6 +62,8 @@ class TextClustering(nn.Module):
             :param dim_reduction_type - type of dimensionality reduction algorithm to be used for classic clustering; 
                                         if None, use initial embeddings
             :param clustering_type - type of clustering algorithm to be used for classic clustering
+            :param deep_model_type - (to do)
+            :param deep_params - (to do)
             :param random_state - if not None, fix random state for reproducibility
             :param min_samples, min_cluster_size - parameters of the HDBSCAN algorithm (in case of classic clustering)
             :param bandwidth - parameter of the MeanShift algorithm (in case of classic clustering)
@@ -86,22 +93,27 @@ class TextClustering(nn.Module):
         self.data_frame = data_frame
         self.train_dataset = train_dataset
         self.times = {}
+        self.deep_model_type = deep_model_type
+        self.deep_params = deep_params
             
         if self.kind == "deep clustering":
             if encoder is not None and decoder is None:
                     raise ValueError("decoder must be not None")
             if decoder is not None and encoder is None:
                     raise ValueError("encoder must be not None")
+                    
             self.model = DeepClustering(
                 n_clusters=n_clusters,
                 inp_dim=inp_dim,
-                train_dataset=train_dataset,
                 feat_dim=feat_dim,
-                alpha=4,
+                train_dataset=train_dataset,
+                alpha=4, 
                 loss_weights=[0.5, 0.5],
+                deep_model_type=deep_model_type,
                 encoder=encoder,
                 decoder=decoder
             )
+            
         elif self.kind == "classic clustering":
             self.model = ClassicClustering(
                 n_clusters, 
@@ -137,27 +149,46 @@ class TextClustering(nn.Module):
             :return training results or losses
         '''
         if self.kind == "deep clustering":
+            N_ITERS_1 = 20
+            LR_1 = 3e-3
+            N_ITERS_2 = 8
+            LR_2 = 1e-4
+            LOSS_WEIGHTS = {
+                "recon": 1.,
+                "geom": 1.
+            }
+            if self.deep_model_type == "DEC" or self.deep_model_type == "DEC+DCN":
+                LOSS_WEIGHTS["DEC"] = 1.
+            if self.deep_model_type == "DCN" or self.deep_model_type == "DEC+DCN":
+                LOSS_WEIGHTS["inv_pw_dist"] = 1.
+                LOSS_WEIGHTS["modified_DCN"] = 1.
+            
+            if self.deep_params is not None:
+                N_ITERS_1 = self.deep_params.get("N_ITERS_1", N_ITERS_1)
+                LR_1 = self.deep_params.get("LR_1", LR_1)
+                N_ITERS_2 = self.deep_params.get("N_ITERS_2", N_ITERS_2)
+                LR_2 = self.deep_params.get("LR_2", LR_2)
+                LOSS_WEIGHTS = self.deep_params.get("loss_weights", LOSS_WEIGHTS)
+            
             self.model.to(device)
-            N_ITERS = 20
-            LR = 3e-3
-            optimizer = Adam(self.model.parameters(), lr=LR)
+
+            optimizer = Adam(self.model.parameters(), lr=LR_1)
             print("Phase 1: train embeddings")
             
             start_time = time.time()
-            losses1 = train(self.model, base_embeds, optimizer, N_ITERS, device)
+            losses1 = train(self.model, base_embeds, optimizer, N_ITERS_1, device)
             end_time = time.time()
             self.times["dim_red"] = end_time - start_time
             
-            self.model.train_clusters(base_embeds.to(device), [0.33, 0.33, 0.34])
+            self.model.train_clusters(base_embeds.to(device), LOSS_WEIGHTS)
         
-            N_ITERS = 8
-            LR = 1e-4
+            
             # Change mode of the model to `train_clusters` and change weights of losses:
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=LR)
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=LR_2)
             print("Phase 2: train clusters")
             
             start_time = time.time()
-            losses2 = train(self.model, base_embeds, optimizer, N_ITERS, device)
+            losses2 = train(self.model, base_embeds, optimizer, N_ITERS_2, device)
             end_time = time.time()
             self.times["clust"] = end_time - start_time
             
@@ -196,7 +227,28 @@ class TextClustering(nn.Module):
             return self.model.clustering.cluster_centers_
         elif self.kind == "cohiclust":
             raise NotImplementedError("Clusters centers for cohiclust if are not implemented.")
-    
+   
+    def visualize_2d(self, inputs, true_cluster_labels, random_state=None):
+        if self.kind == "deep clustering":
+            inputs = inputs.to(self.model.centers.device)
+        dec_features, pred_clusters = self.transform_and_cluster(inputs)
+        dim_reduction = umap.UMAP(random_state=random_state, n_components=2)
+        umap_features = dim_reduction.fit_transform(dec_features)
+        topics = self.get_topics(inputs)
+        new_centers = dim_reduction.transform(self.get_centers())
+        _, pred_clusters = self.transform_and_cluster(inputs)
+        plt.figure(figsize=(9, 9))
+        plt.scatter(*umap_features.T, c=true_cluster_labels, s=1.0)
+        for i, (x, y) in enumerate(new_centers):
+            if topics.get(i) is not None:
+                plt.text(x, y, "\n".join(topics[i]), 
+                         horizontalalignment='center', 
+                         verticalalignment='center', 
+                         fontsize=12)#, backgroundcolor='white')
+        plt.gca().set_aspect("equal")
+        plt.axis("off")
+        plt.show()
+        
     def transform_and_cluster(self, inputs: torch.Tensor, batch_size: int = None) -> Tuple[torch.Tensor, np.array]:
         '''Transform initial text embeddings and clusterize them.
         
