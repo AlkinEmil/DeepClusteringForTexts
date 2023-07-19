@@ -1,0 +1,17 @@
+annoy==1.17.2
+gensim==4.3.1
+hdbscan==0.8.29
+ipython==8.10.0
+keybert==0.7.0
+matplotlib==3.7.1
+nltk==3.8.1
+numpy==1.23.5
+omegaconf==2.3.0
+pacmap==0.7.0
+pandas==1.5.3
+russian_names==0.1.2
+scikit_learn==1.2.1
+scipy==1.10.0
+torch==2.0.0
+tqdm==4.64.1
+umap_learn==0.5.3
