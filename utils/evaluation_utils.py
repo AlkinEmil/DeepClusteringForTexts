@@ -3,7 +3,9 @@ import pandas as pd
 import itertools
 
 from tqdm import tqdm
-from typing import List
+from typing import List, Dict
+
+from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, v_measure_score
 
 from .data_utils import *
 from text_clustering import TextClustering
@@ -21,8 +23,8 @@ def evaluate_classic_clustering(
     bandwidth_list: List[float] = None,
     verbose: bool = False, 
     save_df: bool = False
-):
-    '''Run a series of exepriments on a given dataset.
+) -> Tuple[pd.DataFrame, Dict[str, TextClustering]]:
+    '''Run a series of exepriments on a given dataset. Save dataframe with results.
     
         :param dataset - name of the dataset (currently, 'banking' or 'demo')
         :param data_path - path to the directory with data and embeddings
@@ -36,7 +38,9 @@ def evaluate_classic_clustering(
         :param bandwidth_list - list of bandwidth parameter values for grid search (if MeanShift is used)
         :param verbose - if True, print the the results
         :param save_df - if True, save the results into the "results/" folder
-        :return res_df - dataframe with the results
+        :return a tuple of
+            * res_df - dataframe with the results
+            * dictionary with TextClustering models
     '''
     # load data
     if dataset == "banking":        
@@ -59,6 +63,9 @@ def evaluate_classic_clustering(
         raise ValueError(f"Wrong dataset name {dataset}")
     
     inp_dim = base_embeds.shape[1]
+    
+    # save fitted models in a dictionary
+    best_models_dict = dict()
     
     res_df = pd.DataFrame(columns=[
         "Dim reduction", "Clustering", "Best params",
@@ -86,6 +93,7 @@ def evaluate_classic_clustering(
             best_metrics = dict()
             best_min_samples, best_min_cluster_size = 0, 0
             best_ars = -1e9
+            best_model = None
             
             if verbose:
                 print("Grid search for HDBSCAN parameters")
@@ -123,6 +131,7 @@ def evaluate_classic_clustering(
                     best_ars = ars
                     best_metrics = metrics
                     best_min_samples, best_min_cluster_size = min_samples, min_cluster_size
+                    best_model = model
                     
             times = model.times
             best_params = [f"min_s = {best_min_samples}", f"min_cl_s = {best_min_cluster_size}"]
@@ -137,6 +146,7 @@ def evaluate_classic_clustering(
             best_metrics = dict()
             best_bandwidth = 0
             best_ars = -1e9
+            best_model = None
             
             if verbose:
                 print("Grid search for MeanShift parameters")
@@ -172,6 +182,7 @@ def evaluate_classic_clustering(
                     best_ars = ars
                     best_metrics = metrics
                     best_bandwidth = bandwidth
+                    best_model = model
             
             times = model.times
             best_params = [f"bandwidth = {best_bandwidth}"]
@@ -181,7 +192,7 @@ def evaluate_classic_clustering(
                     print(f"{k}: {np.round(v, 4)}")
             
         else:
-            model = TextClustering(
+            best_model = TextClustering(
                 n_clusters=num_clasters,
                 inp_dim=inp_dim,
                 train_dataset=base_embeds,
@@ -192,17 +203,17 @@ def evaluate_classic_clustering(
                 clustering_type=clustering_type,
             )
 
-            model.fit(base_embeds)
-            _, clusters = model.transform_and_cluster(base_embeds)
+            best_model.fit(base_embeds)
+            _, clusters = best_model.transform_and_cluster(base_embeds)
             
             try:
-                best_metrics = model.evaluate(use_true_clusters=True, verbose=verbose)
+                best_metrics = best_model.evaluate(use_true_clusters=True, verbose=verbose)
             except:
                 if verbose:
                     print(f"Not able to evaluate coherence. Skipping this parameters set.")
                 continue
             
-            times = model.times
+            times = best_model.times
             best_params = ["-"]
             
         if verbose:
@@ -215,6 +226,8 @@ def evaluate_classic_clustering(
             (dim_reduction_type if dim_reduction_type is not None else "-") +
             (f", feat_dim = {n_components}" if n_components is not None else "")
         )
+        
+        best_models_dict[f"{clustering_type}_{dim_rediction}_{best_params}"] = best_model
            
         res_df = res_df.append(
             {
@@ -236,4 +249,48 @@ def evaluate_classic_clustering(
     if save_df:
         res_df.to_csv(f"results/classic_results_{dataset}{num_clasters}.csv")
         
-    return res_df
+    return res_df, best_models_dict
+
+def clustering_similarity(
+    best_models_dict: Dict[str, TextClustering], sim_metric: str = "rand_score"
+) -> pd.DataFrame:
+    '''Evaluate similarity matrix for clustering algorithms.
+    
+        :param best_models_dict - dictionary with TextClustering models
+        :param sim_metric - type of metric for similarity evaluation ("rand_score", "mutual_info" and "v_measure" are available)
+        :return np.array of shape (n_models, n_models) with clustering similarity values
+    '''
+    
+    def enumerated_product(*args):
+        '''Utility for iteration.'''
+        yield from zip(itertools.product(*(range(len(x)) for x in args)), itertools.product(*args))
+    
+    if sim_metric == "rand_score":
+        criterion = adjusted_rand_score
+    elif sim_metric == "mutual_info":
+        criterion = adjusted_mutual_info_score
+    elif sim_metric == "v_measure":
+        criterion = v_measure_score
+    else:
+        raise ValueError(f"Not supported similarity metric '{sim_metric}'.")
+    
+    n_models = len(best_models_dict)
+    sim_matrix = np.zeros((n_models, n_models))
+
+    for (i_1, i_2), (model_1, model_2) in tqdm(
+        enumerated_product(best_models_dict.values(), best_models_dict.values()), 
+        total=n_models*n_models
+    ):
+        sim_matrix[i_1, i_1] = 1.0000
+
+        if i_2 >= i_1:
+            continue
+
+        _, clusters_1 = model_1.transform_and_cluster(model_1.train_dataset)
+        _, clusters_2 = model_2.transform_and_cluster(model_2.train_dataset)
+
+        sim = np.round(criterion(clusters_1, clusters_2), 4).item()
+        sim_matrix[i_1, i_2] = sim
+        sim_matrix[i_2, i_1] = sim
+    
+    return sim_matrix
