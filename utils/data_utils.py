@@ -5,15 +5,23 @@ import torch
 
 from nltk.tokenize import RegexpTokenizer
 from nltk.corpus import stopwords
+from typing import List, Tuple
 
 from russian_names import RussianNames
-
 
 ########################################################################
 #                        Utils for Banking77                           #
 ########################################################################
 
-def load_banking_data(path):
+def load_banking_data(path: str) -> Tuple[pd.DataFrame, List[int], torch.Tensor]:
+    '''Load Banking data and embeddings.
+    
+        :param path - path to the folder with Banking77 data; the folder should contain "embeds/" subfolder
+        :return a tuple of:
+            * pd.DataFrame with texts and markup
+            * list with true cluster labels
+            * T5 embeddings for texts
+    '''
     data_train = pd.read_csv(path + "train.csv", sep=",")
     texts_train = data_train["text"].to_list()
 
@@ -41,41 +49,50 @@ def load_banking_data(path):
     
     return data_all, clusters_all, embeds_t5_all
 
-def sample_banking_clusters(dataframe, raw_embeds, cluster_num_list, noise_cluster_num_list, noise_frac=0.):
+def sample_banking_clusters(
+    dataframe: pd.DataFrame, raw_embeds: torch.Tensor, cluster_num_list: List[int]
+) -> Tuple[torch.Tensor, List[int], pd.DataFrame, List[int]]:
+    '''Dowsample the dataset and extract several cluters.
+    
+        :param dataframe - loaded pd.DataFrame with texts and markup
+        :param raw_embeds - loaded T5 embeddings for texts
+        :param cluster_num_list - cluster numbers to include into the subsample
+        :return a tuple of:
+            * T5 embeddings for subsample
+            * indexes of rows taken into subsample
+            * pd.DataFrame with texts and markup taken into subsample
+            * list with true cluster labels for texts taken into subsample
+    '''
     target_idxs = dataframe[dataframe["cluster"].isin(cluster_num_list)].index.to_list()
     target_size = len(target_idxs)
     target_data = dataframe.loc[target_idxs]
     target_embeds = raw_embeds[target_idxs]
     target_clusters = target_data["cluster"].to_list()
-                
-    if noise_frac != 0. and noise_cluster_num_list is not None:
-        non_target_idxs = dataframe[dataframe["cluster"].isin(noise_cluster_num_list)].index.to_list()
-        noise_data_all = dataframe.loc[non_target_idxs]
-
-        noise_num = int(noise_frac * target_size)
-        noise_idxs = list(np.random.choice(non_target_idxs, noise_num, replace=False))
-        noise_data = dataframe.loc[noise_idxs]
-        noise_embeds = raw_embeds[noise_idxs]
-        noise_clusters = noise_data["cluster"].to_list()
-        subset_data = pd.concat((target_data, noise_data))
-        subset_clusters = target_clusters + noise_clusters
-        subset_embeds = torch.vstack((target_embeds, noise_embeds))
-        subset_idxs = target_idxs + noise_idxs
-     
-        return subset_embeds, subset_idxs, subset_data, subset_clusters, target_idxs
     
-    return target_embeds, target_idxs, target_data, target_clusters, target_idxs
+    return target_embeds, target_idxs, target_data, target_clusters
 
 ########################################################################
 #                        Utils for Sber data                           #
 ########################################################################
 
+# for name removal
 RN = RussianNames(count=200, patronymic=False, surname=False)
 NAMES_LIST = []
 for name in RN:
     NAMES_LIST.append(name)
 
-def clean_russian_dialogue(text, remove_stopwords=False, remove_names=False):
+def clean_russian_dialogue(
+    text: str,
+    remove_stopwords: bool = False,
+    remove_names: bool = False
+) -> str:
+    '''Clean Russian text.
+    
+        :param text - string to be cleaned
+        :param remove_stopwords - if True, remove stopwords
+        :param remove_names - if True, remove Russian names
+        :return clean string
+    '''
     tokenizer = RegexpTokenizer(r'[a-zа-яёЁА-ЯA-Z]\w+\'?\w*')
     noise_list = ["канал", "тикет", "закрыт", "спасибо", "благодарю"]
     if remove_stopwords:
@@ -87,7 +104,15 @@ def clean_russian_dialogue(text, remove_stopwords=False, remove_names=False):
     clean_text = " ".join(tok_text)
     return clean_text
 
-def read_and_clean_sber_data(path):
+def read_and_clean_sber_data(path: str) -> Tuple[pd.DataFrame, List[int], torch.Tensor]:
+    '''Load Demo data and embeddings.
+    
+        :param path - path to the folder with Demo data; the folder should contain "embeds/" subfolder
+        :return a tuple of:
+            * pd.DataFrame with texts and markup
+            * list with true cluster labels
+            * T5 embeddings for texts
+    '''
     data = pd.read_csv(path + "/demo.csv")
     data["cluster"] = data["category"].astype("category")
     data["cluster"] = data["cluster"].cat.codes
@@ -104,7 +129,26 @@ def read_and_clean_sber_data(path):
     
     return data, clusters, embeds
 
-def sample_sber_clusters(cluster_num, data_frame, embeds, ignore_other=True, verbose=True):
+def sample_sber_clusters(
+    cluster_num: int,
+    data_frame: pd.DataFrame,
+    embeds: torch.Tensor,
+    ignore_other: bool = True,
+    verbose: bool = True
+) -> Tuple[torch.Tensor, List[int], pd.DataFrame, List[int]]:
+    '''Dowsample the dataset and extract several most popular clusters cluters.
+    
+        :param cluster_num - number of the most popular clusters to take into subsample
+        :param data_frame - loaded pd.DataFrame with texts and markup
+        :param embeds - loaded embeddings for texts
+        :param ignore_other - if True, ignore "Другое" cluster (the most popular in the dataset)
+        :param verbose - if True, print the results
+        :return a tuple of:
+            * T5 embeddings for subsample
+            * indexes of rows taken into subsample
+            * pd.DataFrame with texts and markup taken into subsample
+            * list with true cluster labels for texts taken into subsample
+    '''
     clusters_all = data_frame["cluster"].to_list()
     _, counts = np.unique(clusters_all, return_counts=True)
     

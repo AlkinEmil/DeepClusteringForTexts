@@ -1,20 +1,35 @@
+###########################################################################################################
+# Code for Contrastive Hierarchical Clustering (model and losses) is taken from the oficial repository:   # 
+# https://github.com/MichalZnalezniak/Contrastive-Hierarchical-Clustering                                 #
+###########################################################################################################
+
 import random
+import numpy as np
+import pandas as pd
 
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import normalized_mutual_info_score
 
+from typing import Dict, Tuple, List
 from tqdm.notebook import tqdm
 from annoy import AnnoyIndex
-from scipy.sparse import lil_matrix, find
+from scipy.sparse import lil_matrix, find, csr_matrix
 
 #############################################################################
 #                                  Dataset                                  #
 #############################################################################
 
-def compute_neighbour_matrix(k, features):
+def compute_neighbour_matrix(k: int, features: torch.Tensor) -> csr_matrix:
+    '''Compute approximate kNN matrix using annoy package.
+    
+        :param k - number of nearest neighbors to find
+        :param features - torch.Tensor of shape (n_objects, n_features)
+        :return binary scipy.sparse.csr_matrix with k nearest neighbors indicators
+    '''
     obj_num, in_dim = features.shape
     annoy = AnnoyIndex(in_dim, "euclidean")
     [annoy.add_item(i, x) for i, x in enumerate(features)]
@@ -27,15 +42,37 @@ def compute_neighbour_matrix(k, features):
         neighs_, _ = annoy.get_nns_by_item(i, k + 1, include_distances=True)
         neighs = neighs_[1:]
         adj[i, neighs] = 1
-        adj[neighs, i] = 1  # symmetrize on the fly
+        adj[neighs, i] = 1 
 
     neighbor_mat = adj.tocsr()
     return neighbor_mat
 
 class Banking1NNPair(Dataset):
-    """Bnking pair dataset."""
-    def __init__(self, base_data, base_embeds, base_clusters, num_clusters, train, neighbor_mat=None, k=5, seed=42):
-        super().__init__()        
+    '''Pair dataset for CoHiClust model. Use nearest neighbors to form positive pairs of objects.'''
+    def __init__(
+        self,
+        base_data: pd.DataFrame,
+        base_embeds: torch.Tensor,
+        base_clusters: np.array,
+        num_clusters: int,
+        train: bool = True,
+        neighbor_mat: csr_matrix = None,
+        k: int = 5,
+        seed: int = 42
+    ) -> None:
+        super().__init__()
+        '''Initialize Banking1NNPair pair dataset.
+        
+            :param base_data - dataframe with original texts ("text" column) and markup ("cluster" column)
+            :param base_embeds - initial texts embeddings
+            :param base_clusters - true cluster assignments
+            :param num_clusters - number of clusters
+            :param train - if True, create train dataset
+            :param neighbor_mat - if not None, use pre-computed neighbor matrix
+            :param k - number of nearest neighbors to take into account
+            :param seed - if not None, fix seed for reproducibility
+        '''
+        # train-test split
         embeds_train, embeds_test, clusters_train, clusters_test, data_train, data_test = train_test_split(
             base_embeds, base_clusters, base_data, test_size=0.3, random_state=seed
         )
@@ -52,6 +89,7 @@ class Banking1NNPair(Dataset):
         self.k = k
         data_size = self.embeds.shape[0]
         
+        # compute approximate kNN matrices. if necessary
         if neighbor_mat is None:
             print("Computing approximate KNN matrix")
             self.neighbor_mat = compute_neighbour_matrix(k=k, features=self.embeds.reshape(data_size, -1))
@@ -61,10 +99,12 @@ class Banking1NNPair(Dataset):
             ), "Shape of neighbor_mat must be (n_samples, n_samples)"
             
             self.neighbor_mat=neighbor_mat
-            
+        
+        # fix seed
         random.seed(seed)
                     
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        '''Get positive pair of text emebddings.'''
         emb, cluster = self.embeds[index], self.clusters[index]
         
         # find index of one of the k nearest neighbors
@@ -76,48 +116,79 @@ class Banking1NNPair(Dataset):
 
         return pos_1, pos_2, cluster
     
-    def __len__(self):
+    def __len__(self) -> int:
+        '''Return size of the dataset.'''
         return len(self.embeds)
     
 class RepeatPairDataset(Dataset):
-    """Simulate pair dataset to make predictions."""
-    def __init__(self, embeds, clusters):
+    '''Simulate pair dataset to make predictions for CoHiClust.'''
+    def __init__(self, embeds: torch.Tensor, clusters: np.array) -> None:
+        '''Initialize fake pair dataset.
+        
+            :param embeds - initial texts embeddings for prediction
+            :param clusters - true clusters (not used in prediction)
+        '''
         super().__init__()        
                 
         self.embeds = embeds
         self.clusters = clusters
                     
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        '''Return pair of copies of one object.'''
         emb, cluster = self.embeds[index], self.clusters[index]
         return emb, emb, cluster
     
-    def __len__(self):
+    def __len__(self) -> int:
+        '''Return size of the dataset.'''
         return len(self.embeds)
     
     
 #############################################################################
-#                                  Losses                                   #
+#             Losses (code is copied from the oficial repo)                 #
 #############################################################################
 
-def probability_vec_with_level(feature, level):
-        prob_vec = torch.tensor([], requires_grad=True).cuda()
-        for u in torch.arange(2**level-1, 2**(level+1) - 1, dtype=torch.long):
-            probability_u = torch.ones_like(feature[:, 0], dtype=torch.float32).cuda()
-            while(u > 0):
-                if u/2 > torch.floor(u/2):
-                    # Go left
-                    u = torch.floor(u/2) 
-                    u = u.long()
-                    probability_u *= feature[:, u]
-                elif u/2 == torch.floor(u/2):
-                    # Go right
-                    u = torch.floor(u/2) - 1
-                    u = u.long()
-                    probability_u *=  1 - feature[:, u]
-            prob_vec = torch.cat((prob_vec, probability_u.unsqueeze(1)), dim=1)
-        return prob_vec
+def probability_vec_with_level(feature: torch.Tensor, level: int) -> torch.Tensor:
+    '''Compute tensor of probablities for a tree level.
+    
+        :param feature - output of the model
+        :param level - number of the tree level
+        :return probablities for a tree level
+    '''
+    prob_vec = torch.tensor([], requires_grad=True).cuda()
+    for u in torch.arange(2 ** level - 1, 2 ** (level + 1) - 1, dtype=torch.long):
+        probability_u = torch.ones_like(feature[:, 0], dtype=torch.float32).cuda()
+        while(u > 0):
+            if u / 2 > torch.floor(u / 2):
+                # Go left
+                u = torch.floor(u / 2) 
+                u = u.long()
+                probability_u *= feature[:, u]
+            elif u / 2 == torch.floor(u / 2):
+                # Go right
+                u = torch.floor(u / 2) - 1
+                u = u.long()
+                probability_u *=  1 - feature[:, u]
+        prob_vec = torch.cat((prob_vec, probability_u.unsqueeze(1)), dim=1)
+    return prob_vec
 
-def tree_loss(tree_output1, tree_output2, batch_size, mask_for_level, mean_of_probs_per_level_per_epoch, tree_level):
+def tree_loss(
+    tree_output1: torch.Tensor,
+    tree_output2: torch.Tensor,
+    batch_size: int,
+    mask_for_level: Dict[int, torch.Tensor],
+    mean_of_probs_per_level_per_epoch: Dict[int, torch.Tensor],
+    tree_level
+):
+    '''Compute loss function for the clustering head ('tree') of the model.
+    
+        :param tree_output1 - output of the tree model (predicted probabilities) for the 1st object in pair
+        :param tree_output2 - output of the tree model (predicted probabilities) for the 2nd object in pair
+        :param batch_size - batch size
+        :param mask_for_level - dictionary with level-wise masks for a tree output
+        :param mean_of_probs_per_level_per_epoch
+        :param tree_level - depth of the tree
+        :return value of the loss function
+    '''
     ## TREE LOSS
     loss_value = torch.tensor([0], dtype=torch.float32, requires_grad=True).cuda()
 
@@ -150,9 +221,23 @@ def tree_loss(tree_output1, tree_output2, batch_size, mask_for_level, mean_of_pr
         )
     return loss_value
 
-def regularization_loss(tree_output1, tree_output2,  masks_for_level, tree_level):
+def regularization_loss(
+    tree_output1: torch.Tensor,
+    tree_output2: torch.Tensor, 
+    masks_for_level: Dict[int, torch.Tensor],
+    tree_level: int
+) -> torch.Tensor:
+    '''Compute regularization loss for CoHiClust model.
+    
+        :param tree_output1 - output of the tree model (predicted probabilities) for the 1st object in pair
+        :param tree_output2 - output of the tree model (predicted probabilities) for the 2nd object in pair
+        :param mask_for_level - dictionary with level-wise masks for a tree output
+        :param tree_level - depth of the tree
+        :return value of the regularization loss
+    '''
     out_tree = torch.cat([tree_output1, tree_output2], dim=0)
     loss_reg = torch.tensor([0], dtype=torch.float32, requires_grad=True).cuda()
+    
     for level in range(1, tree_level + 1):
         prob_features = probability_vec_with_level(out_tree, level)
         probability_leaves = torch.mean(prob_features, dim=0)
@@ -170,12 +255,28 @@ def regularization_loss(tree_output1, tree_output2,  masks_for_level, tree_level
     
 
 #############################################################################
-#                               Train & test                                #
+#        Train & test (code is mostly copied from the oficial repo)         #
 #############################################################################
 
 
-def train_on_epoch(model, train_optimizer, epoch, device="cuda"):
+def train_on_epoch(
+    model: nn.Module,
+    train_optimizer: torch.optim.Optimizer,
+    epoch: int,
+    device: str = "cuda"
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    '''Train CoHiClust model for 1 epoch.
     
+        :param model - CoHiCLust model to be trained
+        :param train_optimizer - training optimizer from torch.optim
+        :param epoch - number of the current training epoch
+        :param device - if "cuda", use GPU for training
+        :return a tuple of:
+            * mean loss (total)
+            * mean tree loss
+            * mean contrastive loss
+            * mean regularization loss
+    '''
     batch_size = model.cfg.training.batch_size
     temperature = model.cfg.simclr.temperature
     tree_level =  model.cfg.tree.tree_level
@@ -254,8 +355,25 @@ def train_on_epoch(model, train_optimizer, epoch, device="cuda"):
     )
 
 
-def test_cohiclust(model, epoch, test_loader=None, device="cuda", verbose=True):
+def test_cohiclust(
+    model: nn.Module,
+    epoch: int,
+    test_loader: DataLoader = None,
+    device: str = "cuda",
+    verbose: bool = True
+) -> Tuple[float, np.array, np.array]:
+    '''Test CoHiCLust model.
     
+        :param model - trained CoHiCLust model
+        :param epoch - number of the current epoch (for logging)
+        :param test_loader - DataLoader with test data (if None, use default dataloader for the model)
+        :param device - if "cuda", use GPU for inference
+        :param verbose - if True, print the result
+        :return a tuple of:
+            * normalized mutual information metric
+            * predicted cluster assignments
+            * true cluster labels
+    '''
     if test_loader is None:
         test_loader = model.test_loader
         
@@ -317,7 +435,18 @@ def test_cohiclust(model, epoch, test_loader=None, device="cuda", verbose=True):
     return actuall_nmi, predictions, labels
 
 
-def train_cohiclust(model, train_optimizer, device="cuda"):
+def train_cohiclust(
+    model,
+    train_optimizer,
+    device="cuda"
+) -> Dict[str, List[float]]:
+    '''Train CoHiCLust model and log the results.
+    
+        :param model - CoHiCLust model to be trained
+        :param train_optimizer - training optimizer (from torch.optim)
+        :param device - if "cuda", use GPU for training
+        :return dictionary with training results (NMI and losses for epochs)
+    '''
     results = {
         'train_loss': [],
         'tree_loss_train': [],

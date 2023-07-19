@@ -41,12 +41,10 @@ def evaluate_classic_clustering(
     # load data
     if dataset == "banking":        
         data_all, clusters_all, embeds_t5_all = load_banking_data(data_path)
-        base_embeds, _, base_data, base_clusters, _ = sample_banking_clusters(
+        base_embeds, _, base_data, base_clusters = sample_banking_clusters(
             dataframe=data_all,
             raw_embeds=embeds_t5_all,
-            cluster_num_list=np.linspace(0, num_clasters - 1, num_clasters),
-            noise_cluster_num_list=None,
-            noise_frac=0
+            cluster_num_list=np.linspace(0, num_clasters - 1, num_clasters)
         )
     elif dataset == "demo":
         data, clusters, embeds = read_and_clean_sber_data(data_path)
