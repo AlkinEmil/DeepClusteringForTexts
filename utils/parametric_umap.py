@@ -1,3 +1,7 @@
+################################################################################################
+# Code for parametric UMAP is from https://github.com/berenslab/contrastive-ne/tree/master     #
+################################################################################################
+
 import torch
 import torch.nn as nn
 
@@ -123,11 +127,10 @@ def compute_neighbour_matrix(k, features):
 def make_neighbor_indices(batch_size, negative_samples, device=None):
     """
     Selects neighbor indices
-    :param batch_size: int Batch size
-    :param negative_samples: int Number of negative samples
-    :param device: torch.device Device of the model
-    :return: torch.tensor Neighbor indices
-    :rtype:
+        :param batch_size: int Batch size
+        :param negative_samples: int Number of negative samples
+        :param device: torch.device Device of the model
+        :return: torch.tensor Neighbor indices
     """
     b = batch_size
 
@@ -218,12 +221,9 @@ class ContrastiveLoss(torch.nn.Module):
         else:
             neigh_inds = self.neigh_inds
         
-        #print("neigh_inds.shape:", neigh_inds.shape)
-        #print("features.shape:", features.shape)
         neighbors = features[neigh_inds]
 
-        # `neigh_mask` indicates which samples feel attractive force
-        # and which ones repel each other
+        # `neigh_mask` indicates which samples feel attractive force and which ones repel each other
         neigh_mask = torch.ones_like(neigh_inds, dtype=torch.bool)
         neigh_mask[:, 0] = False
 

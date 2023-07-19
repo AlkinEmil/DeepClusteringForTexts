@@ -1,48 +1,80 @@
+import time
+
 import numpy as np
+import pandas as pd
 
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
+from torch.optim import Adam
 
-import time
-
+from omegaconf import OmegaConf
 from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, silhouette_score
+from typing import List, Any, Tuple, Dict
 
 from algos.deep_clustering import DeepClustering
+from algos.contrastive_clustering import CoHiClustModel
 from algos.classic_clustering import ClassicClustering
+
 from utils.training_and_visualisation import train
+from utils.cohiclust_utils import train_cohiclust, test_cohiclust, RepeatPairDataset
 from utils import topic_extraction
 
 import umap.umap_ as umap
 import matplotlib.pyplot as plt
 
 class TextClustering(nn.Module):
-    def __init__(self, n_clusters, inp_dim, feat_dim, train_dataset, data_frame,
-                 loss_weights=None,
-                 cluster_centers_init=None,
-                 encoder=None,
-                 decoder=None,
-                 kind="deep clustering",
-                 dim_reduction_type=None, 
-                 clustering_type=None,
+    '''Wrapper for text clustering models.'''
+    def __init__(self,
+                 n_clusters: int,
+                 inp_dim: int,
+                 feat_dim: int,
+                 train_dataset: torch.Tensor,
+                 data_frame: pd.DataFrame,
+                 cohiclust_cfg: OmegaConf = None,
+                 loss_weights: List[float] = None,
+                 cluster_centers_init: torch.Tensor = None,
+                 encoder: nn.Module = None,
+                 decoder: nn.Module = None,
+                 kind: str = "deep clustering",
+                 dim_reduction_type: str = None, 
+                 clustering_type: str = None,
                  deep_model_type="DEC",
-                 deep_params=None,
-                 random_state=None):
-        '''
-            n_clusters: positive int - number of clusters
-            inp_dim: positive int - dimension of the original space
-            feat_dim: positive int - dimension of the feature space in which we do clustering
-            alpha: float - parameter of the clustering loss
-            hid_dim: positive int - dimension of the hidden space
-            cluster_centers_init: torch.Tensor of shape (n_clusters, hid_dim)
+                 deep_params: dict = None,
+                 random_state: int = None,
+                 min_samples: int = None,
+                 min_cluster_size: int = None,
+                 bandwidth: float = None              
+                ) -> None:
+        '''Initialize TextClustering model.
+        
+            :param n_clusters: positive int - number of clusters
+            :param inp_dim: positive int - dimension of the original space
+            :param train_dataset - torch.Tensor of text embeddings (frozen)
+            :param data_frame - pandas.DataFrame conraining texts and cluster markup
+            :param cohiclust_cfg - OmegaConf with model parameters for the Contrastive Hierarchical Clustering model
+            :param feat_dim - positive int - dimension of the feature space in which we do clustering
+            :param loss_weights - list of weighting coefficients for DEC losses (reconstruction, UMAP and clustering)
+            :param cluster_centers_init - torch.Tensor of shape (n_clusters, hid_dim)
+            :param encoder - if not None, use custom nn.Module as encoder for DEC
+            :param decoder - if not None, use custom nn.Module as decoder for DEC
+            :param kind - model mode (currently, "classic clustering", "deep clustering" and "cohiclust" are available)
+            :param dim_reduction_type - type of dimensionality reduction algorithm to be used for classic clustering; 
+                                        if None, use initial embeddings
+            :param clustering_type - type of clustering algorithm to be used for classic clustering
+            :param deep_model_type - (to do)
+            :param deep_params - (to do)
+            :param random_state - if not None, fix random state for reproducibility
+            :param min_samples, min_cluster_size - parameters of the HDBSCAN algorithm (in case of classic clustering)
+            :param bandwidth - parameter of the MeanShift algorithm (in case of classic clustering)
         '''
         super().__init__()
-        
-        
+                
         if not isinstance(n_clusters, int):
             raise TypeError("'n_clusters' must be integer")
         if not isinstance(inp_dim, int):
             raise TypeError("'inp_dim' must be integer")
-        if not isinstance(feat_dim, int):
+        if feat_dim is not None and not isinstance(feat_dim, int):
             raise TypeError("'feat_dim' must be integer")
         if not isinstance(kind, str):
             raise TypeError("'kind' must be string")
@@ -51,7 +83,7 @@ class TextClustering(nn.Module):
             raise ValueError("'n_clusters' must be positive")
         if inp_dim <= 0:
             raise ValueError("'inp_dim' must be positive")
-        if feat_dim <= 0:
+        if feat_dim is not None and feat_dim <= 0:
             raise ValueError("'feat_dim' must be positive")
         
         self.n_clusters = n_clusters
@@ -69,27 +101,53 @@ class TextClustering(nn.Module):
                     raise ValueError("decoder must be not None")
             if decoder is not None and encoder is None:
                     raise ValueError("encoder must be not None")
-            self.model = DeepClustering(n_clusters,
-                                        inp_dim,
-                                        feat_dim,
-                                        train_dataset,
-                                        alpha=4, 
-                                        loss_weights=[0.5, 0.5],
-                                        deep_model_type=deep_model_type,
-                                        encoder=encoder,
-                                        decoder=decoder
-                                       )
+                    
+            self.model = DeepClustering(
+                n_clusters=n_clusters,
+                inp_dim=inp_dim,
+                feat_dim=feat_dim,
+                train_dataset=train_dataset,
+                alpha=4, 
+                loss_weights=[0.5, 0.5],
+                deep_model_type=deep_model_type,
+                encoder=encoder,
+                decoder=decoder
+            )
+            
         elif self.kind == "classic clustering":
-            self.model = ClassicClustering(n_clusters, 
-                                           inp_dim, 
-                                           feat_dim,
-                                           dim_reduction_type=dim_reduction_type, 
-                                           clustering_type=clustering_type, 
-                                           random_state=random_state)
-        else:
-            raise ValueError("Unknown kind `{}`".format(kind))
+            self.model = ClassicClustering(
+                n_clusters, 
+                inp_dim, 
+                feat_dim,
+                dim_reduction_type=dim_reduction_type, 
+                clustering_type=clustering_type, 
+                random_state=random_state,
+                min_samples=min_samples,
+                min_cluster_size=min_cluster_size,
+                bandwidth=bandwidth
+            )
+            
+        elif self.kind == "cohiclust":
+            assert cohiclust_cfg is not None, "You must pass config for CoHiClust model."
+            self.cohiclust_cfg = cohiclust_cfg
+            
+            self.model = CoHiClustModel(
+                cohiclust_cfg,
+                data_frame,
+                train_dataset,
+                n_clusters
+            )
         
-    def fit(self, base_embeds, device='cuda'):
+        else:
+            raise ValueError(f"Wrong clustering type {self.kind}.")
+        
+    def fit(self, base_embeds: torch.Tensor, device: str = 'cuda') -> Any:
+        '''Fit text Clustering model, measure time.
+        
+            :param base_embeds - text embeddings (frozen)
+            :param device - device for training (in case of "deep clustering" or "cohiclust")
+            :return training results or losses
+        '''
         if self.kind == "deep clustering":
             N_ITERS_1 = 20
             LR_1 = 3e-3
@@ -104,14 +162,6 @@ class TextClustering(nn.Module):
             if self.deep_model_type == "DCN" or self.deep_model_type == "DEC+DCN":
                 LOSS_WEIGHTS["inv_pw_dist"] = 1.
                 LOSS_WEIGHTS["modified_DCN"] = 1.
-            #if self.deep_model_type == "DEC":
-            #    LOSS_WEIGHTS = [1., 1., 1.]
-            #elif self.deep_model_type == "DCN":
-            #    LOSS_WEIGHTS = [1., 1., 1., 1.]
-            #elif self.deep_model_type == "DEC+DCN":
-            #    LOSS_WEIGHTS = [1., 1., 1., 1., 1.]
-            #else:
-            #    raise ValueError("Unknown deep_model_type `{}`".format(self.deep_model_type))
             
             if self.deep_params is not None:
                 N_ITERS_1 = self.deep_params.get("N_ITERS_1", N_ITERS_1)
@@ -121,16 +171,14 @@ class TextClustering(nn.Module):
                 LOSS_WEIGHTS = self.deep_params.get("loss_weights", LOSS_WEIGHTS)
             
             self.model.to(device)
-            
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=LR_1)
+
+            optimizer = Adam(self.model.parameters(), lr=LR_1)
             print("Phase 1: train embeddings")
             
             start_time = time.time()
             losses1 = train(self.model, base_embeds, optimizer, N_ITERS_1, device)
             end_time = time.time()
             self.times["dim_red"] = end_time - start_time
-            
-            
             
             self.model.train_clusters(base_embeds.to(device), LOSS_WEIGHTS)
         
@@ -152,15 +200,34 @@ class TextClustering(nn.Module):
             start_time = time.time()
             self.model.fit(base_embeds)
             end_time = time.time()
-            self.times["total"] = end_time - start_time
+            self.times["dim_red"] = end_time - start_time
             return None, None
         
-    def get_centers(self):
+        elif self.kind == "cohiclust":
+            optimizer = Adam(self.model.parameters(), lr=1e-3)
+            start_time = time.time()
+            results =  train_cohiclust(
+                self.model,
+                optimizer,
+                device=device
+            )
+            end_time = time.time()
+            
+            self.times["clust"] = end_time - start_time
+            self.times["dim_red"] = 0
+            self.times["total"] = self.times["dim_red"] + self.times["clust"]
+            
+            return results
+        
+    def get_centers(self) -> np.array:
+        '''Get cluster centers.'''
         if self.kind == "deep clustering":
             return self.model.centers.cpu().detach().numpy()
         elif self.kind == "classic clustering":
             return self.model.clustering.cluster_centers_
-        
+        elif self.kind == "cohiclust":
+            raise NotImplementedError("Clusters centers for cohiclust if are not implemented.")
+   
     def visualize_2d(self, inputs, true_cluster_labels, random_state=None):
         if self.kind == "deep clustering":
             inputs = inputs.to(self.model.centers.device)
@@ -181,19 +248,50 @@ class TextClustering(nn.Module):
         plt.gca().set_aspect("equal")
         plt.axis("off")
         plt.show()
-    
-    def transform_and_cluster(self, inputs, batch_size=None):
+        
+    def transform_and_cluster(self, inputs: torch.Tensor, batch_size: int = None) -> Tuple[torch.Tensor, np.array]:
+        '''Transform initial text embeddings and clusterize them.
+        
+            :param inputs - torch.Tensor with initial embeddings
+            :param batch_size - batch size for DeepClustering and CoHiClust models
+            :return a tuple of:
+                * transformed (encoded) text embeddings
+                * predicted cluster assignments
+        '''
         if self.kind == "deep clustering":
             inputs = inputs.to(self.model.centers.device)
             embeds, pred_clusters = self.model.transform_and_cluster(inputs, batch_size=batch_size)
         elif self.kind == "classic clustering":
+            
+            start_time = time.time()
             embeds, pred_clusters = self.model.transform_and_cluster(inputs)
+            end_time = time.time()
+            self.times["clust"] = end_time - start_time
+            self.times["total"] = self.times["dim_red"] + self.times["clust"]
         
+        elif self.kind == "cohiclust":
+            if batch_size is None:
+                batch_size = self.model.cfg.training.batch_size
+            predict_dataset = RepeatPairDataset(inputs, self.data_frame["cluster"].to_list())
+            predict_loader = DataLoader(predict_dataset, batch_size=batch_size)
+            _, pred_clusters, labels = test_cohiclust(
+                self.model, self.model.cfg.training.epochs, predict_loader, verbose=False
+            )
+            embeds = None
+        
+        # store predicted clusters for evaluation
         self.data_frame["pred_cluster"] = pred_clusters
             
         return embeds, pred_clusters
     
-    def get_topics(self, inputs, language="english"):
+    def get_topics(self, inputs: torch.Tensor, language: str = "english") -> Dict[int, List[str]]:
+        '''Clusterize texts and extract topics (key words) of predicted clusters.
+        
+            :param inputs -  torch.Tensor with initial embeddings
+            :param language - language for topic extraction ("english" and "russial" are currently supported)
+        '''
+        assert language in ["english", "russian"], f"Not supported language {language}"
+        
         if self.kind == "deep clustering":
             inputs = inputs.to(self.model.centers.device)
             if self.model.mode == "train_embeds":
@@ -205,8 +303,17 @@ class TextClustering(nn.Module):
             raise ValueError("Unknown language `{}`".format(lang))
         return topics_cluster_dict
     
-    def evaluate(self, use_true_clusters=False, language="english", verbose=True):
-        assert "pred_cluster" in self.data_frame.columns, "Predicted cluster labels are not in the dataframe"
+    def evaluate(self, use_true_clusters: bool = False, language: str = "english", verbose: bool = True) -> Dict[str, float]:
+        '''Evaluate TextClustering model.
+        
+            :param use_true_clusters - if True, compute markup-based metrics
+            :param language - language for topic extraction ("english" and "russial" are currently supported)
+            :param verbose - if True, print the results
+            :return dictionary with metrics (silhouette score, adjusted Rand index, adjusted mutual information,
+                                                                                                and average topic coherence)
+        '''
+        assert "pred_cluster" in self.data_frame.columns, "Predicted clusters are not in the dataframe. Call .predict() method"
+        
         pred_clusters = self.data_frame["pred_cluster"].to_list()
         
         metrics = dict()

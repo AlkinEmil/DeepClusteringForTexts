@@ -1,11 +1,30 @@
 import pandas as pd
 
+from typing import List, Tuple, Dict
+
 from keybert import KeyBERT
 from gensim.models import CoherenceModel
 import gensim.corpora as corpora
 
 
-def get_topics_for_cluster(texts_cluster, kw_model, language, diversity=0.3, keyphrase_ngram_range=(1, 2), phrases_num=3):
+def get_topics_for_cluster(
+    texts_cluster: List[str],
+    kw_model: KeyBERT,
+    language: str,
+    diversity: float = 0.3,
+    keyphrase_ngram_range: Tuple[int] = (1, 2),
+    phrases_num: int = 3
+) -> List[str]:
+    '''Extract keywords for texts in one cluster using KeyBert.
+    
+        :param texts_cluster - list with texts for key word extraction
+        :param kw_model - KeyBERT model for key word extraction
+        :param language - language of texts
+        :param diversity - parameter regulating key phrases diversity
+        :param keyphrase_ngram_range - length of the key phrases for extraction
+        :param phrases_num - number of key phrases to be extracted
+        :return list of key phrases for texts
+    '''
     texts_cluster = " ".join(texts_cluster)
     
     keyword_pairs = kw_model.extract_keywords(
@@ -21,12 +40,32 @@ def get_topics_for_cluster(texts_cluster, kw_model, language, diversity=0.3, key
     return keywords
 
 
-def get_topics(data_frame, kw_model=None, language="english", diversity=0.3, keyphrase_ngram_range=(1, 2), phrases_num=3):
+def get_topics(
+    data_frame: pd.DataFrame,
+    kw_model: KeyBERT = None,
+    language: str = "english",
+    diversity: float = 0.3,
+    keyphrase_ngram_range: Tuple[int] = (1, 2),
+    phrases_num: int = 3
+) -> Dict[int, List[str]]:
+    '''Get cluster-topics dictionary for predicted clusters.
+    
+        :param data_frame - pd.DataFrame with texts (column "text") for topic extraction; should contain "pred_cluster" column
+        :param kw_model - KeyBERT model for key word extraction
+        :param language - language of texts
+        :param diversity - parameter regulating key phrases diversity
+        :param keyphrase_ngram_range - length of the key phrases for extraction
+        :param phrases_num - number of key phrases to be extracted
+        :return cluster-topics dictionary for predicted clusters
+    '''
     if kw_model is None and language == "english":
+        # use default sentence BERT model for English
         kw_model = KeyBERT()
     elif kw_model is None and language == "russian":
-        #kw_model = KeyBERT("DeepPavlov/rubert-base-cased-sentence")
-        kw_model = KeyBERT("ai-forever/ruBert-base")
+        # use Russian sentence BERT model
+        kw_model = KeyBERT("DeepPavlov/rubert-base-cased-sentence")
+    else:
+        raise ValueError("Wrong language for topic extraction.")
         
     topics_cluster_dict = {}
     
@@ -47,7 +86,16 @@ def get_topics(data_frame, kw_model=None, language="english", diversity=0.3, key
     return topics_cluster_dict
 
 
-def compute_coherence_for_clusters(topics_cluster_dict, data_frame, verbose=False):    
+def compute_coherence_for_clusters(
+    topics_cluster_dict: Dict[int, List[str]], data_frame: pd.DataFrame, verbose: bool = False
+) -> Dict[int, float]:
+    '''Compute coherence metric for extracted topics using gensim.CoherenceModel().
+    
+        :param topics_cluster_dict - dictionary with key words of predicted clusters
+        :param data_frame - pd.DataFrame with texts (column "text") for topic extraction; should contain "pred_cluster" column
+        :param verbose - if True, print the results
+        :return cluster-coherence dictionary for predicted clusters
+    '''
     topics_list = []
     for topic_phrases_list in topics_cluster_dict.values():
         curr_topic_list = []
