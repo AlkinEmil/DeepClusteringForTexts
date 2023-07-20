@@ -14,8 +14,6 @@ from scipy.sparse import lil_matrix
 from typing import List, Dict, Tuple
 
 from utils.parametric_umap import NumpyToTensorDataset, FastTensorDataLoader, ContrastiveLoss
-#torch.autograd.set_detect_anomaly(True)
-
 
 class VanillaMLP(nn.Module):
     '''Vanilla MLP encoder/decoder for the DeepClustering model.'''
@@ -102,6 +100,7 @@ class DeepClustering(nn.Module):
             self.deep_model_type = deep_model_type
         else:
             raise ValueError("deep_model_type `{}`".format(deep_model_type))
+            
         self.n_clusters = n_clusters
         self.inp_dim = inp_dim
         self.feat_dim = feat_dim
@@ -162,7 +161,7 @@ class DeepClustering(nn.Module):
         assert isinstance(loss_weights, dict), "loss_weights must be dict"
         assert isinstance(loss_weights["recon"], float)
         assert isinstance(loss_weights["geom"], float)
-        #assert isinstance(loss_weights[2], float)
+        
         if self.deep_model_type == "DEC":
             assert len(loss_weights) == 3
             assert isinstance(loss_weights["DEC"], float)
@@ -217,9 +216,9 @@ class DeepClustering(nn.Module):
         kl_loss = nn.KLDivLoss(reduction='sum')
         return kl_loss(torch.log(p), q)
     
-    def compute_inverse_pairwise_distance_loss(self):
+    def compute_inverse_pairwise_distance_loss(self) -> torch.Tensor:
+        '''Compute regularization loss for DEC/DCN - inverse pairwise distance between current centroids and points.'''
         M = self.centers
-        #pw_dist = torch.zeros(self.n_clusters, self.n_clusters).requires_grad_(True)
         pdist = torch.nn.PairwiseDistance(p=2)
         loss = None
         for i in range(1, self.n_clusters):
@@ -230,9 +229,9 @@ class DeepClustering(nn.Module):
         loss /= 2
         return loss
     
-    def get_radius(self):
+    def get_radius(self) -> torch.Tensor:
+        '''Compute minimal cluster radius.'''
         M = self.centers
-        #pw_dist = torch.zeros(self.n_clusters, self.n_clusters).requires_grad_(True)
         pdist = torch.nn.PairwiseDistance(p=2)
         radius = None
         for i in range(1, self.n_clusters):
@@ -244,7 +243,8 @@ class DeepClustering(nn.Module):
         return radius
     
     
-    def compute_modified_DCN_loss(self, item):
+    def compute_modified_DCN_loss(self, item: torch.Tensor) -> torch.Tensor:
+        '''Compute DCN loss.'''
         M = self.centers
         pdist = torch.nn.PairwiseDistance(p=2)
         loss = None

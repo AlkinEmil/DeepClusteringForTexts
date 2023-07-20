@@ -181,7 +181,6 @@ class TextClustering(nn.Module):
             self.times["dim_red"] = end_time - start_time
             
             self.model.train_clusters(base_embeds.to(device), LOSS_WEIGHTS)
-        
             
             # Change mode of the model to `train_clusters` and change weights of losses:
             optimizer = torch.optim.Adam(self.model.parameters(), lr=LR_2)
@@ -224,19 +223,51 @@ class TextClustering(nn.Module):
         if self.kind == "deep clustering":
             return self.model.centers.cpu().detach().numpy()
         elif self.kind == "classic clustering":
-            return self.model.clustering.cluster_centers_
+            if self.model.clustering_type == "gmm":
+                return self.model.clustering.means_
+            elif self.model.clustering_type in ["kmeans", "mean_shift"]:
+                return self.model.cluster_centers_
+            else:
+                raise NotImplementedError(f"Clusters centers for {self.model.clustering_type} are not implemented.")
         elif self.kind == "cohiclust":
-            raise NotImplementedError("Clusters centers for cohiclust if are not implemented.")
+            raise NotImplementedError("Clusters centers for cohiclust are not implemented.")
    
-    def visualize_2d(self, inputs, true_cluster_labels, random_state=None):
+    def visualize_2d(
+        self, inputs: torch.Tensor, true_cluster_labels: List[int], random_state: int = None) -> None:
+        '''Visualize clustering and topic extraction results in 2D using UMAP.
+        
+            :param inputs - initial text embeddings
+            :param true_cluster_labels - true cluster labels
+            :param random_state - if not None, fix seed for reproducibility
+        '''
         if self.kind == "deep clustering":
             inputs = inputs.to(self.model.centers.device)
+            
         dec_features, pred_clusters = self.transform_and_cluster(inputs)
+        
         dim_reduction = umap.UMAP(random_state=random_state, n_components=2)
         umap_features = dim_reduction.fit_transform(dec_features)
         topics = self.get_topics(inputs)
-        new_centers = dim_reduction.transform(self.get_centers())
-        _, pred_clusters = self.transform_and_cluster(inputs)
+        
+        print("topics:", topics)
+        
+        try:
+            new_centers = dim_reduction.transform(self.get_centers())
+
+        except NotImplementedError:
+            # estimate centroids in R2 for visualization only
+            true_clusters = np.array(true_cluster_labels)
+            unique_clusters = np.unique(true_clusters)
+            num_clusters = len(unique_clusters)
+            num_features = umap_features.shape[1]
+            new_centers = np.zeros((num_clusters, num_features))
+            
+            for i in range(num_clusters):
+                curr_cluster_mask = true_clusters == unique_clusters[i]
+                curr_umap_features = umap_features[curr_cluster_mask, :]
+                c = np.mean(curr_umap_features, axis=0)
+                new_centers[i] = c
+                    
         plt.figure(figsize=(9, 9))
         plt.scatter(*umap_features.T, c=true_cluster_labels, s=1.0)
         for i, (x, y) in enumerate(new_centers):
@@ -244,7 +275,7 @@ class TextClustering(nn.Module):
                 plt.text(x, y, "\n".join(topics[i]), 
                          horizontalalignment='center', 
                          verticalalignment='center', 
-                         fontsize=12)#, backgroundcolor='white')
+                         fontsize=12)
         plt.gca().set_aspect("equal")
         plt.axis("off")
         plt.show()
@@ -274,14 +305,23 @@ class TextClustering(nn.Module):
                 batch_size = self.model.cfg.training.batch_size
             predict_dataset = RepeatPairDataset(inputs, self.data_frame["cluster"].to_list())
             predict_loader = DataLoader(predict_dataset, batch_size=batch_size)
-            _, pred_clusters, labels = test_cohiclust(
+            _, pred_clusters, labels, embeds = test_cohiclust(
                 self.model, self.model.cfg.training.epochs, predict_loader, verbose=False
             )
-            embeds = None
-        
+            unique_clusters = np.unique(pred_clusters)
+            correct_clusters = []
+            
+            for pred_cluster in pred_clusters:
+                for i, cl_num in enumerate(unique_clusters):
+                    if pred_cluster == cl_num:
+                        correct_clusters.append(i)
+                        
+            pred_clusters = correct_clusters
+            embeds = embeds.detach().cpu()
+                
         # store predicted clusters for evaluation
         self.data_frame["pred_cluster"] = pred_clusters
-            
+           
         return embeds, pred_clusters
     
     def get_topics(self, inputs: torch.Tensor, language: str = "english") -> Dict[int, List[str]]:
