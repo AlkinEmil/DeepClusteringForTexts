@@ -181,7 +181,6 @@ class TextClustering(nn.Module):
             self.times["dim_red"] = end_time - start_time
             
             self.model.train_clusters(base_embeds.to(device), LOSS_WEIGHTS)
-        
             
             # Change mode of the model to `train_clusters` and change weights of losses:
             optimizer = torch.optim.Adam(self.model.parameters(), lr=LR_2)
@@ -318,11 +317,12 @@ class TextClustering(nn.Module):
                         correct_clusters.append(i)
                         
             pred_clusters = correct_clusters
+            embeds = embeds.detach().cpu()
                 
         # store predicted clusters for evaluation
         self.data_frame["pred_cluster"] = pred_clusters
            
-        return embeds.detach().cpu(), pred_clusters
+        return embeds, pred_clusters
     
     def get_topics(self, inputs: torch.Tensor, language: str = "english") -> Dict[int, List[str]]:
         '''Clusterize texts and extract topics (key words) of predicted clusters.
