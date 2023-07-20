@@ -58,12 +58,12 @@ class TextClustering(nn.Module):
             :param cluster_centers_init - torch.Tensor of shape (n_clusters, hid_dim)
             :param encoder - if not None, use custom nn.Module as encoder for DEC
             :param decoder - if not None, use custom nn.Module as decoder for DEC
-            :param kind - model mode (currently, "classic clustering", "deep clustering" and "cohiclust" are available)
+            :param kind - model type (currently, "classic clustering", "deep clustering" and "cohiclust" are available)
             :param dim_reduction_type - type of dimensionality reduction algorithm to be used for classic clustering; 
                                         if None, use initial embeddings
             :param clustering_type - type of clustering algorithm to be used for classic clustering
-            :param deep_model_type - (to do)
-            :param deep_params - (to do)
+            :param deep_model_type - deep model type ("DEC", "DCN", "DEC+DCN" and "custom" are available)
+            :param deep_params - dict with model parameters for a deep clustering model
             :param random_state - if not None, fix random state for reproducibility
             :param min_samples, min_cluster_size - parameters of the HDBSCAN algorithm (in case of classic clustering)
             :param bandwidth - parameter of the MeanShift algorithm (in case of classic clustering)
