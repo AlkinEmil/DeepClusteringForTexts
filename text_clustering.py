@@ -58,12 +58,12 @@ class TextClustering(nn.Module):
             :param cluster_centers_init - torch.Tensor of shape (n_clusters, hid_dim)
             :param encoder - if not None, use custom nn.Module as encoder for DEC
             :param decoder - if not None, use custom nn.Module as decoder for DEC
-            :param kind - model mode (currently, "classic clustering", "deep clustering" and "cohiclust" are available)
+            :param kind - model type (currently, "classic clustering", "deep clustering" and "cohiclust" are available)
             :param dim_reduction_type - type of dimensionality reduction algorithm to be used for classic clustering; 
                                         if None, use initial embeddings
             :param clustering_type - type of clustering algorithm to be used for classic clustering
-            :param deep_model_type - (to do)
-            :param deep_params - (to do)
+            :param deep_model_type - deep model type ("DEC", "DCN", "DEC+DCN" and "custom" are available)
+            :param deep_params - dict with model parameters for a deep clustering model
             :param random_state - if not None, fix random state for reproducibility
             :param min_samples, min_cluster_size - parameters of the HDBSCAN algorithm (in case of classic clustering)
             :param bandwidth - parameter of the MeanShift algorithm (in case of classic clustering)
@@ -232,13 +232,24 @@ class TextClustering(nn.Module):
         elif self.kind == "cohiclust":
             raise NotImplementedError("Clusters centers for cohiclust are not implemented.")
    
-    def visualize_2d(
-        self, inputs: torch.Tensor, true_cluster_labels: List[int], random_state: int = None) -> None:
+    def visualize_2d(self,
+                     inputs: torch.Tensor,
+                     true_cluster_labels: List[int], 
+                     draw_pred_labels: bool = False,
+                     print_topics: bool = False,
+                     random_state: int = None,
+                     title: str = None,
+                     filename: str = None
+                    ) -> None:
         '''Visualize clustering and topic extraction results in 2D using UMAP.
         
             :param inputs - initial text embeddings
             :param true_cluster_labels - true cluster labels
+            :param draw_pred_labels - if True, draw also a graph with prededicted labels
+            :param print_topics - if True, topic will be printed
             :param random_state - if not None, fix seed for reproducibility
+            :param title
+            :param filename - if not None, save figure into file '`filename`.pdf'
         '''
         if self.kind == "deep clustering":
             inputs = inputs.to(self.model.centers.device)
@@ -248,13 +259,15 @@ class TextClustering(nn.Module):
         dim_reduction = umap.UMAP(random_state=random_state, n_components=2)
         umap_features = dim_reduction.fit_transform(dec_features)
         topics = self.get_topics(inputs)
-                
+        if print_topics:
+            print("topics:", topics)
+        
         try:
             new_centers = dim_reduction.transform(self.get_centers())
 
         except NotImplementedError:
             # estimate centroids in R2 for visualization only
-            true_clusters = np.array(true_cluster_labels)
+            true_clusters = true_cluster_labels
             unique_clusters = np.unique(true_clusters)
             num_clusters = len(unique_clusters)
             num_features = umap_features.shape[1]
@@ -265,17 +278,52 @@ class TextClustering(nn.Module):
                 curr_umap_features = umap_features[curr_cluster_mask, :]
                 c = np.mean(curr_umap_features, axis=0)
                 new_centers[i] = c
-                    
-        plt.figure(figsize=(9, 9))
-        plt.scatter(*umap_features.T, c=true_cluster_labels, s=1.0)
-        for i, (x, y) in enumerate(new_centers):
-            if topics.get(i) is not None:
-                plt.text(x, y, "\n".join(topics[i]), 
-                         horizontalalignment='center', 
-                         verticalalignment='center', 
-                         fontsize=12)
-        plt.gca().set_aspect("equal")
-        plt.axis("off")
+        
+        if not draw_pred_labels:
+            plt.figure(figsize=(9, 9))
+            if title is not None:
+                plt.title(title, fontsize=16)
+            plt.scatter(*umap_features.T, c=true_cluster_labels, s=1.0)
+            for i, (x, y) in enumerate(new_centers):
+                if topics.get(i) is not None:
+                    plt.text(x, y, "\n".join(topics[i]), 
+                             horizontalalignment='center', 
+                             verticalalignment='center', 
+                             fontsize=12)
+            plt.gca().set_aspect("equal")
+            plt.axis("off")
+            if filename is not None:
+                plt.savefig(filename + '.pdf', format='pdf')
+        else:
+            fig, axs = plt.subplots(1, 2, figsize=(14, 6))
+            if title is not None:
+                fig.suptitle(title, fontsize=16)
+            axs[0].scatter(*umap_features.T, c=true_cluster_labels, s=1.0)
+            axs[0].set_title("True labels", fontsize=12)
+            axs[1].scatter(*umap_features.T, c=pred_clusters, s=1.0)
+            axs[1].set_title("Predicted labels", fontsize=12)
+            for i, (x, y) in enumerate(new_centers):
+                if topics.get(i) is not None:
+                    axs[0].text(x, y, "\n".join(topics[i]), 
+                                horizontalalignment='center', 
+                                verticalalignment='center', 
+                                fontsize=12)
+                    axs[1].text(x, y, "\n".join(topics[i]), 
+                                horizontalalignment='center', 
+                                verticalalignment='center', 
+                                fontsize=12)
+                
+            axs[0].set_aspect("equal")
+            axs[1].set_aspect("equal")
+            #axs[0].set_visible(False)
+            axs[0].set_xticks([])
+            axs[0].set_yticks([])
+            axs[1].set_xticks([])
+            axs[1].set_yticks([])
+            axs[0].axis('off')
+            axs[1].axis('off')
+            if filename is not None:
+                fig.savefig(filename + '.pdf', format='pdf')
         plt.show()
         
     def transform_and_cluster(self, inputs: torch.Tensor, batch_size: int = None) -> Tuple[torch.Tensor, np.array]:

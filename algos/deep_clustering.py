@@ -48,7 +48,7 @@ class VanillaMLP(nn.Module):
     
 
 class DeepClustering(nn.Module):
-    '''Deep clustering model (DEC). Implementation is based on https://arxiv.org/abs/1511.06335'''
+    '''Deep clustering model'''
     def __init__(self,
                  n_clusters: int, 
                  inp_dim: int, 
@@ -204,10 +204,10 @@ class DeepClustering(nn.Module):
         return q
     
     def compute_DEC_loss(self, z: torch.Tensor) -> torch.Tensor:
-        '''Compute clustering (DEC) loss.
+        '''Compute clustering (DEC) loss. See https://arxiv.org/abs/1511.06335
         
             :param z - embeddings (output of encoder)
-            :return KL(p||q) - value of clustering loss function 
+            :return KL(p||q) - value of clustering loss function
         '''
         q = self.compute_q(z)
         f = q.sum(0, keepdim=True)
