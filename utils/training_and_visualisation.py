@@ -67,7 +67,8 @@ def train(model,
           optimizer: Optimizer,
           epochs: int,
           device: str = "cpu", 
-          early_stoping: bool = False, 
+          early_stoping: bool = True, 
+          tol: float = 0.01,
           verbose: bool = False, 
           save_images: bool = False, 
           title: str = "Deep Embedding Clustering for Banking77", 
@@ -81,6 +82,7 @@ def train(model,
         :param epochs - number of training epochs
         :param device - if "cuda", use GPU for training
         :param early_stoping - if True, use EarlyStopping
+        :param tol - tolerance
         :param verbose - if True, show the images
         :param save_images - if True, save the result images
         :param title - title for images
@@ -122,8 +124,12 @@ def train(model,
                     display.clear_output(wait=True)
                 
             if (
-                early_stoping and model.mode == "train_clusters" and
+                t > 10 and early_stoping and model.mode == "train_clusters" and
                 np.mean(losses['clustering_loss'][-10:]) < np.mean(losses['geom_loss'][-10:])
+            ):
+                return losses
+            if (t > 10 and model.mode == "train_embeds" and
+                (np.abs(np.array(losses['total_loss'][-10:]) - np.array(losses['total_loss'][-11:-1])) < tol).all()
             ):
                 return losses
             t += 1

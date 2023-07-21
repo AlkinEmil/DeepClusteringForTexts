@@ -289,21 +289,20 @@ class DeepClustering(nn.Module):
         }
         
         if self.mode == "train_embeds":
-            total_loss = recon_loss * self.loss_weights[0] + geom_loss * self.loss_weights[1]
+            loss["total_loss"] = recon_loss * self.loss_weights[0] + geom_loss * self.loss_weights[1]
         else:
-            total_loss = recon_loss * self.loss_weights['recon'] + \
-                         geom_loss * self.loss_weights['geom']
+            loss["clustering_loss"] = 0
+            loss["total_loss"] = recon_loss * self.loss_weights['recon'] + \
+                                 geom_loss * self.loss_weights['geom']
             if self.deep_model_type == "DEC" or self.deep_model_type == "DEC+DCN":
-                total_loss = total_loss + DEC_loss * self.loss_weights['DEC']
+                loss["clustering_loss"] += DEC_loss * self.loss_weights['DEC']
                 loss["DEC_loss"] = DEC_loss
             if self.deep_model_type == "DCN" or self.deep_model_type == "DEC+DCN":
-                total_loss = total_loss + \
-                             inv_pw_dist_loss * self.loss_weights['inv_pw_dist'] + \
-                             modified_DCN_loss * self.loss_weights['modified_DCN']
+                loss["clustering_loss"] += inv_pw_dist_loss * self.loss_weights['inv_pw_dist'] + \
+                                           modified_DCN_loss * self.loss_weights['modified_DCN']
                 loss["inv_pw_dist_loss"] = inv_pw_dist_loss
                 loss["modified_DCN_loss"] = modified_DCN_loss
-        
-        loss["total_loss"] = total_loss
+            loss["total_loss"] += loss["clustering_loss"]
         return loss
     
     def transform(self, inputs: np.array, batch_size: int = None) -> np.array:
