@@ -92,7 +92,7 @@ def train(model,
     dataloader = model.create_dataloader(train_dataset)
     _, init_clusters = model.transform_and_cluster(train_dataset.to(device))
     
-    def update_losses(losses: Dict[str, List[float]], loss: Dict[str: float]) -> None:
+    def update_losses(losses: Dict[str, List[float]], loss: Dict[str, float]) -> None:
         '''Utility for loss tracking.'''
         for i in loss:
             if losses.get(i) is None:
