@@ -297,21 +297,21 @@ class TextClustering(nn.Module):
         else:
             fig, axs = plt.subplots(1, 2, figsize=(14, 6))
             if title is not None:
-                fig.suptitle(title, fontsize=16)
+                fig.suptitle(title, fontsize=18)
             axs[0].scatter(*umap_features.T, c=true_cluster_labels, s=1.0)
-            axs[0].set_title("True labels", fontsize=12)
+            axs[0].set_title("True labels", fontsize=16)
             axs[1].scatter(*umap_features.T, c=pred_clusters, s=1.0)
-            axs[1].set_title("Predicted labels", fontsize=12)
+            axs[1].set_title("Predicted labels", fontsize=16)
             for i, (x, y) in enumerate(new_centers):
                 if topics.get(i) is not None:
                     axs[0].text(x, y, "\n".join(topics[i]), 
                                 horizontalalignment='center', 
                                 verticalalignment='center', 
-                                fontsize=12)
+                                fontsize=10)
                     axs[1].text(x, y, "\n".join(topics[i]), 
                                 horizontalalignment='center', 
                                 verticalalignment='center', 
-                                fontsize=12)
+                                fontsize=10)
                 
             axs[0].set_aspect("equal")
             axs[1].set_aspect("equal")
