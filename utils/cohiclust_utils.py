@@ -381,7 +381,7 @@ def test_cohiclust(
     
     tree_level =  model.cfg.tree.tree_level
     feature_bank = []
-    labels, predictions = [], []
+    labels, predictions, res_embeds = [], [], []
     
     with torch.no_grad():
         if hasattr(model.memory_loader.dataset, 'targets'):
@@ -396,6 +396,7 @@ def test_cohiclust(
             data = data.to(device)
             target = target.to(device)
             feature, out, tree_output = model(data)
+            res_embeds.append(feature)
             
             if hasattr(model.memory_loader.dataset, 'targets'):
                 c = len(model.memory_loader.dataset.classes)
@@ -431,8 +432,10 @@ def test_cohiclust(
                 test_bar.set_description(
                     'Test Epoch: [{}/{}] NMI:{:.2f}'.format(epoch, model.cfg.training.epochs, actuall_nmi)
                 )
+                
+        res_embeds = torch.vstack(res_embeds)
 
-    return actuall_nmi, predictions, labels
+    return actuall_nmi, predictions, labels, res_embeds
 
 
 def train_cohiclust(
@@ -465,7 +468,7 @@ def train_cohiclust(
         results['simclr_loss_train'].append(simclr_loss_train)
         
         if epoch > model.cfg.training.pretraining_epochs:
-            nmi, _, _ = test_cohiclust(model, epoch, device=device)
+            nmi, _, _, _ = test_cohiclust(model, epoch, device=device)
             results['nmi'].append(nmi)
         else:
             results['nmi'].append(None)

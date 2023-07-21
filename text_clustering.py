@@ -259,11 +259,8 @@ class TextClustering(nn.Module):
         dim_reduction = umap.UMAP(random_state=random_state, n_components=2)
         umap_features = dim_reduction.fit_transform(dec_features)
         topics = self.get_topics(inputs)
-        
         if print_topics:
             print("topics:", topics)
-        
-        #cluster_labels = true_cluster_labels if use_true_labels else pred_clusters
         
         try:
             new_centers = dim_reduction.transform(self.get_centers())
